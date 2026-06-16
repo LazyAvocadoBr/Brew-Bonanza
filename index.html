@@ -1,25 +1,4 @@
 <!DOCTYPE html>
-<!--
-  ============================================================
-  BREW BONANZA — Pixel Coffee Shop Time-Management Game
-  ============================================================
-  Architecture: Single-file, pure vanilla JS + HTML5 Canvas 2D.
-  No build step, no dependencies. Designed for browser jam play.
-
-  Systems overview:
-    PALETTE     – Shared colour constants (P object)
-    AUDIO       – Web Audio API synth: jazz-bossa BGM + SFX
-    GAME STATE  – Global G object; state machine drives the loop
-    SHOP        – SHOP_ITEMS decorations; stacked patience bonuses
-    TUTORIAL    – TUT state machine; 16 guided steps, no timer
-    DRINKS      – Recipe definitions (steps[], price, colours)
-    STATIONS    – 8 drag-source panels (4L / 4R of canvas)
-    CUSTOMERS   – Procedural NPCs with per-tick patience decay
-    RENDERING   – BG → stations → customers → cup → HUD → FX
-    INPUT       – Mouse + Touch → normalised canvas coords
-    MAIN LOOP   – requestAnimationFrame; delta-time for timer
-  ============================================================
--->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
@@ -42,11 +21,7 @@ const c=document.getElementById('c');
 const ctx=c.getContext('2d');
 ctx.imageSmoothingEnabled=false;
 
-// ─────────────────────────────────────────────────────────────
-// PALETTE
-// Central colour registry.  Every draw call reads from P so
-// the entire visual theme can be adjusted in one place.
-// ─────────────────────────────────────────────────────────────
+// ── PALETTE ──────────────────────────────────────────────────
 const P={
   bg:'#2b1a0e', counter:'#3d2010', counterTop:'#6b3a1f',
   wall:'#1a0f0a', wallDeco:'#2d1a0d',
@@ -64,30 +39,17 @@ const P={
   thought:'#fff8ee',
 };
 
-// ─────────────────────────────────────────────────────────────
-// AUDIO — Web Audio API (synthesised, no asset files)
-//
-// All sound is generated at runtime via oscillators and noise
-// buffers so the game ships as a single HTML file.
-//
-// BGM strategy: notes are pre-scheduled ~loopDur seconds into
-// the future so the audio thread never stalls on the JS frame
-// budget.  A setTimeout reschedules the next loop 0.3 s before
-// the current one ends, keeping scheduling ahead of playback.
-// ─────────────────────────────────────────────────────────────
+// ── SOUND ────────────────────────────────────────────────────
 const AudioCtx=window.AudioContext||window.webkitAudioContext;
 let audioCtx=null;
-/** Lazy-init the AudioContext — browsers block creation until a user gesture. */
 function getAudio(){ if(!audioCtx) audioCtx=new AudioCtx(); return audioCtx; }
 
 // ── MUSIC ─────────────────────────────────────────────────────
-/** Guards against double-starting the BGM loop (e.g. multi-touch). */
 let musicStarted=false;
 let musicMuted=false;
-/** Single gain node that controls overall BGM volume for mute toggling. */
 let masterGain=null;
 
-/** Note frequency table (Hz).  R=0 is a rest (silence). */
+// Note frequencies (Hz)
 const NOTE={
   C3:130.8,D3:146.8,E3:164.8,F3:174.6,G3:196,A3:220,B3:246.9,
   C4:261.6,D4:293.7,E4:329.6,F4:349.2,G4:392,A4:440,B4:493.9,
@@ -96,7 +58,7 @@ const NOTE={
   R:0 // rest
 };
 
-/** 8-bar jazz-bossa melody.  Flat pair array: [freq, durationInBeats, ...] */
+// Cozy jazz-bossa melody (flat array: freq, dur, freq, dur, ...)
 const MELODY_NOTES=[
   NOTE.E5,0.5, NOTE.D5,0.5, NOTE.C5,1,   NOTE.E5,0.5, NOTE.G5,0.5, NOTE.A5,1,
   NOTE.G5,0.5, NOTE.E5,0.5, NOTE.D5,1,   NOTE.C5,0.5, NOTE.D5,0.5, NOTE.E5,1,
@@ -108,7 +70,7 @@ const MELODY_NOTES=[
   NOTE.A4,0.5, NOTE.C5,0.5, NOTE.E5,1,   NOTE.D5,0.5, NOTE.C5,0.5, NOTE.G4,2,
 ];
 
-/** 2-bar walking bass line — looped to fill whatever the melody length is. */
+// Walking bass line (2-bar loop)
 const BASS_NOTES=[
   NOTE.C3,1, NOTE.E3,0.5, NOTE.G3,0.5,
   NOTE.A3,1, NOTE.G3,0.5, NOTE.E3,0.5,
@@ -119,19 +81,8 @@ const BASS_NOTES=[
 const BPM=108;
 const BEAT=60/BPM;
 
-/**
- * Schedule a single synthesised note on the Web Audio graph.
- * Uses ADSR-style envelope: fast attack, mid-sustain, exponential release.
- * @param {AudioContext} ac
- * @param {number} freq   - Frequency in Hz; 0 = rest (no-op).
- * @param {number} startTime - Absolute AudioContext time to begin.
- * @param {number} dur    - Duration in beats.
- * @param {string} type   - OscillatorType ('sine'|'triangle'|'square'|'sawtooth').
- * @param {number} vol    - Peak gain (0–1).
- * @param {GainNode} gainNode - Output gain node (usually masterGain).
- */
 function scheduleNote(ac, freq, startTime, dur, type='sine', vol=0.12, gainNode){
-  if(freq===0) return; // rest — emit no oscillator
+  if(freq===0) return; // rest
   const osc=ac.createOscillator();
   const g=ac.createGain();
   osc.connect(g);
@@ -147,10 +98,6 @@ function scheduleNote(ac, freq, startTime, dur, type='sine', vol=0.12, gainNode)
   osc.stop(startTime+dur*BEAT+0.05);
 }
 
-/**
- * Synthesised kick drum: sine oscillator pitched from 150 Hz → 40 Hz over 120 ms.
- * The rapid frequency drop gives the characteristic thump of a bass drum.
- */
 function scheduleKick(ac, startTime, gainNode){
   const osc=ac.createOscillator();
   const g=ac.createGain();
@@ -163,10 +110,6 @@ function scheduleKick(ac, startTime, gainNode){
   osc.start(startTime); osc.stop(startTime+0.25);
 }
 
-/**
- * Synthesised hi-hat: short white-noise burst through a high-pass filter at 8 kHz.
- * @param {number} vol - Quieter on off-beats (0.032) than on-beats (0.05).
- */
 function scheduleHihat(ac, startTime, vol=0.06, gainNode){
   const buf=ac.createBuffer(1,ac.sampleRate*0.05,ac.sampleRate);
   const data=buf.getChannelData(0);
@@ -182,10 +125,6 @@ function scheduleHihat(ac, startTime, vol=0.06, gainNode){
   src.start(startTime);
 }
 
-/**
- * Synthesised snare: decaying white-noise burst through a band-pass filter at 2 kHz.
- * Linear amplitude taper (1 - i/length) gives the characteristic snare snap shape.
- */
 function scheduleSnare(ac, startTime, gainNode){
   const buf=ac.createBuffer(1,ac.sampleRate*0.15,ac.sampleRate);
   const data=buf.getChannelData(0);
@@ -204,7 +143,6 @@ function scheduleSnare(ac, startTime, gainNode){
 let musicLoopTimeout=null;
 let loopStartTime=0;
 
-/** Begin BGM playback.  Safe to call multiple times — guarded by musicStarted. */
 function startMusic(){
   if(musicStarted) return;
   musicStarted=true;
@@ -215,18 +153,12 @@ function startMusic(){
   scheduleLoop(ac.currentTime+0.1);
 }
 
-/**
- * Pre-schedule one full loop of BGM (melody + bass + chords + drums) into
- * the Web Audio timeline starting at startTime.  Calls itself via setTimeout
- * ~0.3 s before the loop ends to chain seamlessly without gaps.
- * @param {number} startTime - Absolute AudioContext time for loop start.
- */
 function scheduleLoop(startTime){
   if(!musicStarted) return;
   const ac=getAudio();
   loopStartTime=startTime;
 
-  // Sum beat durations to find total loop length before scheduling anything
+  // How many beats in one full melody loop
   let melodyBeats=0;
   for(let i=0;i<MELODY_NOTES.length;i+=2) melodyBeats+=MELODY_NOTES[i+1];
 
@@ -236,7 +168,7 @@ function scheduleLoop(startTime){
     const freq=MELODY_NOTES[i];
     const dur=MELODY_NOTES[i+1];
     scheduleNote(ac,freq,t,dur,'sine',0.13,masterGain);
-    // 0.794 ≈ minor-third interval ratio; adds subtle warmth on sustained notes
+    // slight harmony a third below on longer notes
     if(dur>=1&&freq>0){
       scheduleNote(ac,freq*0.794,t+0.01,dur,'sine',0.04,masterGain);
     }
@@ -244,11 +176,10 @@ function scheduleLoop(startTime){
   }
   const loopDur=t-startTime;
 
-  // ── Bass (triangle, warm) ─ repeat short 2-bar pattern to cover full melody ──
+  // ── Bass (triangle, warm) ─ loop it to fill melody length ──
   let bt=startTime;
   let bassBeats=0;
   for(let i=0;i<BASS_NOTES.length;i+=2) bassBeats+=BASS_NOTES[i+1];
-  // Ceiling division ensures bass never cuts short before melody ends
   const bassLoops=Math.ceil(melodyBeats/bassBeats);
   for(let rep=0;rep<bassLoops;rep++){
     for(let i=0;i<BASS_NOTES.length;i+=2){
@@ -292,15 +223,11 @@ function scheduleLoop(startTime){
     if(b%4===1) scheduleKick(ac,bt2+BEAT*0.5,masterGain);
   }
 
-  // Fire next schedule 0.3 s before current loop ends to avoid audible gaps
+  // Schedule next loop slightly before this one ends
   const scheduleAhead=loopDur-0.3;
   musicLoopTimeout=setTimeout(()=>scheduleLoop(startTime+loopDur), scheduleAhead*1000);
 }
 
-/**
- * Toggle BGM mute state.  Uses setTargetAtTime for a 0.3 s fade to prevent
- * clicks/pops from abrupt volume changes.
- */
 function toggleMusic(){
   musicMuted=!musicMuted;
   if(masterGain){
@@ -309,12 +236,6 @@ function toggleMusic(){
   }
 }
 
-/**
- * Play ascending arpeggio on successful order serve.
- * Higher tip level adds an extra note and raises the base pitch,
- * giving auditory feedback on how well the player performed.
- * @param {number} tipLevel - 0=no tip, 1=small tip, 2=big tip.
- */
 function playServeSound(tipLevel){
   try{
     const ac=getAudio();
@@ -335,7 +256,6 @@ function playServeSound(tipLevel){
   }catch(e){}
 }
 
-/** Short rising-pitch blip confirming an ingredient was added to the cup. */
 function playStepSound(){
   try{
     const ac=getAudio();
@@ -351,7 +271,6 @@ function playStepSound(){
   }catch(e){}
 }
 
-/** Descending sawtooth buzz for wrong-order or insufficient-funds feedback. */
 function playErrorSound(){
   try{
     const ac=getAudio();
@@ -366,41 +285,23 @@ function playErrorSound(){
     osc.start(ac.currentTime); osc.stop(ac.currentTime+0.22);
   }catch(e){}
 }
-// ─────────────────────────────────────────────────────────────
-// GAME STATE
-// G is the single source of truth for all runtime state.
-// The state string drives the main loop's branch selection.
-//   'title'    – animated start screen
-//   'tutorial' – guided 16-step tutorial (no timer)
-//   'game'     – active gameplay
-//   'score'    – end-of-day summary screen
-//   'shop'     – decoration upgrade shop between days
-// ─────────────────────────────────────────────────────────────
 const G={
   state:'title', // title|tutorial|game|score|shop
   day:1, score:0, money:0, combo:0,
   queue:[], maxQueue:4,
   currentOrder:null,
-  /** Per-station flash timers (key=stationId, val=frames remaining) and
-   *  per-step fill animation heights (key='fill_'+stepId, val=pixels). */
   station:{},
-  heldItem:null,       // unused; drag object handles held ingredient
-  particles:[],        // active Particle objects {x,y,dx,dy,life,col,size}
-  floatTexts:[],       // active FloatText objects {txt,x,y,vy,life,col}
+  heldItem:null,
+  particles:[],
+  floatTexts:[],
   timer:0, maxTimer:90,
   dayScore:0, ordersComplete:0,
-  bubble:null,         // reserved for future bubble effects
-  decorations:new Set(), // Set of owned decoration ids (persists across days)
-  totalMoney:0,          // lifetime earnings (informational, not spent from here)
+  bubble:null,
+  decorations:new Set(), // owned decoration ids
+  totalMoney:0,          // cumulative across days
 };
 
-// ─────────────────────────────────────────────────────────────
-// SHOP ITEMS
-// Each decoration reduces the per-tick patience drain rate by
-// its `bonus` value.  Bonuses stack additively.  Once purchased,
-// the decoration is rendered in drawBG() and persists for all
-// subsequent days.
-// ─────────────────────────────────────────────────────────────
+// ── SHOP ITEMS ────────────────────────────────────────────────
 const SHOP_ITEMS=[
   {
     id:'plant',
@@ -452,22 +353,7 @@ const SHOP_ITEMS=[
   },
 ];
 
-// ─────────────────────────────────────────────────────────────
-// TUTORIAL STATE
-// TUT drives a linear 16-step guided sequence.
-// Each step declares:
-//   msg        – dialogue text shown in the speech box
-//   subMsg     – blinking instruction below the dialogue
-//   highlight  – station id (or 'queue'/'serve_btn') to spotlight;
-//                null = no highlight
-//   drink      – drink key that the tutorial customer will order
-//   action     – what a click/drag should do:
-//                'next'         → advance step on any click
-//                'select_order' → must click the thought bubble
-//                'do_step'      → must drag the highlighted station
-//                'serve'        → must click the Serve button
-//                'start_game'   → transitions to real gameplay
-// ─────────────────────────────────────────────────────────────
+// ── TUTORIAL STATE ───────────────────────────────────────────
 const TUT={
   step:0,
   steps:[
@@ -556,13 +442,7 @@ const TUT={
   arrowBlink:0,
 };
 
-// ─────────────────────────────────────────────────────────────
-// DRINKS MENU
-// Recipes are defined as ordered step arrays.  The player must
-// apply ingredients in the exact sequence listed — wrong order
-// triggers an error.  `foamColor` is the colour rendered for
-// foam/steam_milk layers; null means no foam cap.
-// ─────────────────────────────────────────────────────────────
+// ── DRINKS MENU ──────────────────────────────────────────────
 const DRINKS={
   espresso:{name:'ESPRESSO',steps:['grind','espresso'],color:'#1a0800',foamColor:null,label:'☕',price:3},
   latte:{name:'LATTE',steps:['grind','espresso','steam_milk'],color:'#c8814a',foamColor:'#fff8ee',label:'🥛',price:5},
@@ -574,17 +454,8 @@ const DRINKS={
 
 const DRINK_KEYS=Object.keys(DRINKS);
 
-// ─────────────────────────────────────────────────────────────
-// STATIONS
-// The 8 drag-source panels arranged 4 on the left edge and
-// 4 on the right edge of the canvas.
-//   action – the step string this station adds to buildSteps
-//   needs  – optional prerequisite step that must already be in
-//             buildSteps before this station can be used
-//             (e.g. espresso requires 'grind' first)
-//   col    – background colour for the panel widget
-// ─────────────────────────────────────────────────────────────
-// Left column (x~10) and right column (x~800), 4 each side
+// ── STATIONS ─────────────────────────────────────────────────
+// Left column (x~18) and right column (x~810), 4 each side
 const STATION_W=90, STATION_H=66;
 const STATIONS=[
   {id:'grinder',  x:10,  y:300, w:STATION_W, h:STATION_H, label:'GRINDER',  icon:'⚙️', action:'grind',      col:'#3d2010'},
@@ -597,30 +468,16 @@ const STATIONS=[
   {id:'cold',     x:800, y:516, w:STATION_W, h:STATION_H, label:'COLD BREW',icon:'🫙', action:'cold_brew',  col:'#0d0800', needs:'grind'},
 ];
 
-/** Centre of the large interactive cup in canvas space. */
+// Cup is fixed in center
 const CUP_CX=450, CUP_CY=500;
-/** Pixel dimensions of the large cup widget. */
 const CUP_W=100, CUP_H=120;
 
-// ─────────────────────────────────────────────────────────────
-// BUILD STATE
-// buildSteps tracks which recipe steps have been applied to the
-// current in-progress cup.  activeDrink holds the drink key so
-// both the recipe definition and the visual cup colour can be
-// looked up from DRINKS.
-// ─────────────────────────────────────────────────────────────
-let buildSteps=[];   // ordered list of completed step strings
-let activeDrink=null; // key into DRINKS, or null when no order active
+// ── CUPS & BUILD STATE ───────────────────────────────────────
+let buildSteps=[];
+let activeDrink=null;
 
-// ─────────────────────────────────────────────────────────────
-// INGREDIENT DRAG STATE
-// A single drag object tracks one in-flight ingredient token.
-// Two animation phases exist:
-//   active   – token follows the pointer (player is holding it)
-//   flying   – token arcs toward the cup on successful drop;
-//              a parabolic offset (sin curve) is applied to y so
-//              the token curves rather than travelling in a line.
-// ─────────────────────────────────────────────────────────────
+// ── INGREDIENT DRAG STATE ────────────────────────────────────
+// drag = an ingredient token being dragged from a station to the cup
 const drag={
   active:false,
   station:null,     // STATIONS entry being dragged from
@@ -640,42 +497,24 @@ const drag={
   flyFromX:0, flyFromY:0,
 };
 
-/**
- * Clear all drag/animation state and remove liquid-fill entries from G.station.
- * Called when an order is served, cancelled, or a customer walks out.
- */
 function resetCup(){
   drag.active=false;
   drag.flying=false;
   drag.splashing=false;
   drag.station=null;
-  // Remove fill animation keys; non-prefixed keys are station flash timers and must stay
   Object.keys(G.station).forEach(k=>{ if(k.startsWith('fill_')) delete G.station[k]; });
 }
 
-// ─────────────────────────────────────────────────────────────
-// CUSTOMERS
-// Customer appearance is procedurally generated from palette
-// arrays.  patienceRate controls how fast patience drains each
-// frame; it scales with day number and is reduced by owned
-// decorations (clamped to a minimum of 0.004 so the game
-// remains winnable even without upgrades).
-// ─────────────────────────────────────────────────────────────
+// ── CUSTOMERS ────────────────────────────────────────────────
 const NAMES=['ALEX','MIRA','JAKE','LUNA','OMAR','ZARA','KAI','NORA'];
 const HAIR_COLORS=['#1a0a00','#3d1a00','#c87820','#e8c870','#8b4040','#2a3a5a','#cc6688'];
 const HAIR_STYLES=['short','long','curly','mohawk','bun','cap'];
 const PANTS_COLORS=['#2a3a6a','#1a2a1a','#3a1a1a','#2a2a2a','#5a3a1a'];
 const ACCESSORIES=['none','none','none','glasses','earring','hat'];
 
-/**
- * Factory: generate a new Customer object with random appearance and drink.
- * patienceRate = baseRate − decorationBonus, clamped to 0.004 minimum.
- * baseRate grows by 0.002 per day, making later days progressively harder.
- * @returns {Object} Customer data object.
- */
 function makeCustomer(){
   const dk=DRINK_KEYS[Math.floor(Math.random()*DRINK_KEYS.length)];
-  // Accumulate patience bonus from all owned decorations
+  // Sum up patience bonuses from owned decorations
   let bonus=0;
   G.decorations.forEach(id=>{
     const item=SHOP_ITEMS.find(s=>s.id===id);
@@ -689,7 +528,7 @@ function makeCustomer(){
     patience:100,
     patienceMax:100,
     patienceRate:Math.max(baseRate-bonus, 0.004),
-    x:920, tx:0, y:255, // x starts off-screen right; slides to queue slot tx
+    x:920, tx:0, y:255,
     skin:[P.customer1,P.customer2,P.customer3][Math.floor(Math.random()*3)],
     color:[P.customer1,P.customer2,P.customer3][Math.floor(Math.random()*3)], // keep for compat
     shirt:[P.shirt1,P.shirt2,P.shirt3][Math.floor(Math.random()*3)],
@@ -703,47 +542,23 @@ function makeCustomer(){
   };
 }
 
-// ─────────────────────────────────────────────────────────────
-// PIXEL DRAWING HELPERS
-// Thin wrappers around Canvas 2D fill/stroke calls.
-// Using Math.round on coordinates keeps rendering crisp on the
-// pixelated canvas (imageSmoothingEnabled=false).
-// ─────────────────────────────────────────────────────────────
-/** Fill an axis-aligned rectangle with pixel-snapped coordinates. */
+// ── PIXEL DRAWING HELPERS ────────────────────────────────────
 function pixRect(x,y,w,h,col){
   ctx.fillStyle=col;
   ctx.fillRect(Math.round(x),Math.round(y),w,h);
 }
-/** Draw pixel-font text with the Press Start 2P typeface. */
 function pixText(txt,x,y,col,size=8,align='left'){
   ctx.font=`${size}px 'Press Start 2P'`;
   ctx.fillStyle=col;
   ctx.textAlign=align;
   ctx.fillText(txt,Math.round(x),Math.round(y));
 }
-/** Draw a filled rectangle with a centred stroke outline (UI panel style). */
 function pixOutlineRect(x,y,w,h,fill,stroke,sw=2){
   ctx.fillStyle=fill; ctx.fillRect(x,y,w,h);
   ctx.strokeStyle=stroke; ctx.lineWidth=sw; ctx.strokeRect(x+sw/2,y+sw/2,w-sw,h-sw);
 }
 
-// ─────────────────────────────────────────────────────────────
-// STATION RENDERING
-// ─────────────────────────────────────────────────────────────
-/**
- * Draw a single ingredient station panel.
- * Visual states (combined freely):
- *   hover  – slightly lighter background on mouse-over
- *   isNext – gold pulsing glow + inward arrow; marks the next
- *            required step so players always know what to grab
- *   isDone – green tint + checkmark once step is complete
- * Station flash (G.station[s.id] > 0) plays a brief amber
- * overlay that counts down each frame to give action feedback.
- * @param {Object}  s       - Entry from STATIONS array.
- * @param {boolean} hover   - Pointer is over this station.
- * @param {boolean} isNext  - This is the next needed ingredient.
- * @param {boolean} isDone  - Step already completed for current drink.
- */
+// ── DRAW STATION ─────────────────────────────────────────────
 function drawStation(s, hover, isNext=false, isDone=false){
   // Background panel
   const col = isDone ? '#1a2a10' : hover ? '#6a3510' : s.col||P.btn;
@@ -790,17 +605,7 @@ function drawStation(s, hover, isNext=false, isDone=false){
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// CUP RENDERING (small — used in thought bubbles and queue)
-// ─────────────────────────────────────────────────────────────
-/**
- * Draw a small cup showing drink fill progress.
- * Fill height is proportional to steps completed / total steps.
- * @param {number} x,y   - Centre-bottom position.
- * @param {string} drink - Key into DRINKS; null draws an empty cup.
- * @param {Array}  steps - Completed steps for fill level.
- * @param {number} size  - Scale multiplier (1=normal, 0.62=thought-bubble size).
- */
+// ── DRAW CUP ─────────────────────────────────────────────────
 function drawCup(x,y,drink,steps,size=1){
   const W=28*size, H=36*size;
   // cup body
@@ -839,10 +644,6 @@ function drawCup(x,y,drink,steps,size=1){
   }
 }
 
-/**
- * Draw animated rising steam wisps above the cup.
- * Each wisp oscillates horizontally using sin(time + phaseOffset).
- */
 function drawSteam(x,y,s=1){
   for(let i=0;i<3;i++){
     const t=Date.now()/600+i*0.8;
@@ -852,22 +653,7 @@ function drawSteam(x,y,s=1){
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// CUSTOMER RENDERING
-// Customers are drawn bottom-up: shoes → legs → torso → arms
-// → head → hair → accessory → thought bubble → patience bar.
-// Eye iris colour shifts from blue (calm) to red (impatient)
-// below 50% patience.  Mouth expression has three states:
-//   >65% patience  → smile with teeth
-//   35–65%         → neutral line
-//   <35%           → frown
-// ─────────────────────────────────────────────────────────────
-/**
- * Draw a full customer sprite and their thought bubble UI.
- * @param {Object} cust - Customer object from G.queue.
- * @param {number} cx   - Horizontal centre in canvas pixels.
- * @param {number} idx  - Queue index; used to detect active order highlight.
- */
+// ── DRAW CUSTOMER ────────────────────────────────────────────
 function drawCustomer(cust, cx, idx){
   const x=cx, y=cust.y;
   const active=(G.currentOrder===idx);
@@ -933,7 +719,6 @@ function drawCustomer(cust, cx, idx){
   pixRect(x-9,ey,8,7,'#fff8f0');
   pixRect(x+2,ey,8,7,'#fff8f0');
   // irises — color varies by patience
-  // Iris colour shifts: blue when happy, red when frustrated
   const irisCol=pat>0.5?'#3a6aaa':'#aa4a3a';
   pixRect(x-7,ey+1,4,5,irisCol);
   pixRect(x+4,ey+1,4,5,irisCol);
@@ -1084,30 +869,14 @@ function drawCustomer(cust, cx, idx){
     pixText('TAP',x,tby-10,P.score,7,'center');
 }
 
-/**
- * Return the hit-test rectangle for a customer's thought bubble.
- * Slightly larger than the visual bubble (+6 px on all sides) for
- * a forgiving click target on mobile.
- * @returns {{x1,y1,x2,y2}} Axis-aligned bounding box in canvas pixels.
- */
+// Returns click bounds for a customer's order bubble
 function customerBubbleBounds(cust){
   const bw=90, bh=76;
   const tbx=cust.x-bw/2, tby=cust.y-100-bh-16;
   return {x1:tbx-6, y1:tby-6, x2:tbx+bw+6, y2:tby+bh+22};
 }
 
-// ─────────────────────────────────────────────────────────────
-// PARTICLES & FLOATING TEXT
-// Particles use simple Euler integration: position += velocity
-// each frame, with a constant downward gravity of +0.1 px/frame.
-// life starts at 1.0 and is used as the globalAlpha value,
-// so particles naturally fade as they age.
-// ─────────────────────────────────────────────────────────────
-/**
- * Spawn n square particles in a random radial burst.
- * @param {string} col - CSS colour string for all particles in this burst.
- * @param {number} n   - Particle count.
- */
+// ── PARTICLES ────────────────────────────────────────────────
 function spawnParticles(x,y,col,n=8){
   for(let i=0;i<n;i++){
     const a=Math.random()*Math.PI*2;
@@ -1116,26 +885,11 @@ function spawnParticles(x,y,col,n=8){
   }
 }
 
-/**
- * Spawn a floating score/feedback label that drifts upward and fades.
- * vy=-1.5 means it rises 1.5 px per frame; life decays at 0.025/frame
- * giving ~40 frames (~0.67 s at 60 fps) of visibility.
- */
 function addFloat(txt,x,y,col){
   G.floatTexts.push({txt,x,y:y,vy:-1.5,life:1,col});
 }
 
-// ─────────────────────────────────────────────────────────────
-// BACKGROUND RENDERING
-// drawBG() renders the static café environment plus any owned
-// decorations.  It must be called first each frame so all other
-// elements draw on top.  Decoration rendering is gated by
-// G.decorations membership checks.
-// ─────────────────────────────────────────────────────────────
-/**
- * Draw the full café background: walls, brickwork, window,
- * menu board, counter, floor, and any purchased decorations.
- */
+// ── DRAW BACKGROUND ──────────────────────────────────────────
 function drawBG(){
   // wall
   pixRect(0,0,900,260,P.wall);
@@ -1271,21 +1025,7 @@ function drawBG(){
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// LARGE INTERACTIVE CUP
-// The centred cup shows the in-progress drink being assembled.
-// Each completed step animates its liquid layer upward using
-// G.station['fill_'+step] as a growing pixel height value
-// (incremented by 5 px/frame until it reaches layerH).
-// The splash animation plays a radial ring + 8 arc drops when
-// an ingredient lands.  The Serve button appears only when all
-// steps are complete.
-// ─────────────────────────────────────────────────────────────
-/**
- * Draw the large centred cup showing the current build progress,
- * liquid fill animations, foam cap, splash effect, step indicators,
- * and the Serve button when the recipe is complete.
- */
+// ── DRAW CENTERED CUP ────────────────────────────────────────
 function drawCenteredCup(){
   if(!activeDrink) return;
   const d=DRINKS[activeDrink];
@@ -1308,8 +1048,7 @@ function drawCenteredCup(){
   // bottom rim
   pixRect(cx-W/2, cy, W, 6, P.cupDark);
 
-  // Divide the cup interior equally among all required steps so
-  // each completed ingredient occupies the same visual band height
+  // Liquid layers
   const totalSteps=d.steps.length;
   const maxFillH=H-8;
   const layerH=Math.floor(maxFillH/totalSteps);
@@ -1420,22 +1159,14 @@ function drawCenteredCup(){
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// INGREDIENT DRAG RENDERING
-// ─────────────────────────────────────────────────────────────
-/**
- * Draw the ingredient token that follows the pointer (active phase)
- * or arcs toward the cup (flying phase).
- * Flying arc: linear x/y interpolation + a sin(progress*π) vertical
- * offset of 60 px so the token curves up then down into the cup.
- */
+// ── DRAW DRAGGED INGREDIENT TOKEN ────────────────────────────
 function drawIngredientDrag(){
   if(!drag.active&&!drag.flying) return;
   const s=drag.station;
   if(!s) return;
 
   let tx=drag.x, ty=drag.y;
-  // Parabolic arc: subtract sin(p*π)*60 so the token peaks mid-flight
+  // flying arc toward cup — just interpolate position for drawing
   if(drag.flying){
     const p=Math.min(drag.flyTimer/drag.flyMax, 1);
     tx=drag.flyFromX+(CUP_CX-drag.flyFromX)*p;
@@ -1455,15 +1186,6 @@ function drawIngredientDrag(){
   ctx.textBaseline='alphabetic';
 }
 
-/**
- * Validate and apply a dropped ingredient to the current build.
- * Only the next sequential step in the recipe is accepted; anything
- * else does nothing (error feedback is handled at drop-time in
- * tryDropIngredient).  On success: updates buildSteps, fires the
- * station flash timer, plays audio, spawns particles, and advances
- * the tutorial if in tutorial state.
- * @param {Object} s - The STATIONS entry that was dropped.
- */
 function applyIngredient(s){
   if(!activeDrink||G.currentOrder===null) return;
   const d=DRINKS[activeDrink];
@@ -1487,27 +1209,16 @@ function applyIngredient(s){
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// HUD & SCREEN RENDERERS
-// ─────────────────────────────────────────────────────────────
-/**
- * Draw the "click a customer" prompt when the queue has customers
- * but no order is currently selected.  Customers render their own
- * thought bubbles, so the queue widget itself is just this hint.
- */
+// ── DRAW ORDER QUEUE ─────────────────────────────────────────
 function drawQueue(){
-  // Thought bubbles are rendered per-customer in drawCustomer;
+  // Orders are shown on customer heads — just draw a small label if queue has people
   if(G.queue.length>0 && G.currentOrder===null){
     if(Math.floor(Date.now()/700)%2===0)
       pixText('▲ CLICK A CUSTOMER TO TAKE ORDER',450,420,P.score,8,'center');
   }
 }
 
-/**
- * Draw the top HUD strip: day number, money, order count,
- * colour-coded time bar (green → amber → red as time runs out),
- * and the mute toggle button.
- */
+// ── DRAW HUD ─────────────────────────────────────────────────
 function drawHUD(){
   pixRect(0,0,900,28,'#0d0600');
   pixText(`DAY ${G.day}`,10,20,P.cream,9);
@@ -1523,7 +1234,6 @@ function drawHUD(){
   drawMuteBtn();
 }
 
-/** Draw the mute/unmute toggle button in the top-right corner. */
 function drawMuteBtn(){
   const bx=856,by=2,bw=40,bh=24;
   pixOutlineRect(bx,by,bw,bh,musicMuted?'#3a1a00':'#1a3a1a',musicMuted?'#7a3a00':'#2a6a2a',1);
@@ -1532,7 +1242,7 @@ function drawMuteBtn(){
   ctx.textBaseline='alphabetic';
 }
 
-/** Draw the animated title screen with bouncing logo and start prompt. */
+// ── DRAW TITLE ───────────────────────────────────────────────
 function drawTitle(){
   pixRect(0,0,900,600,'#1a0f0a');
   // animated coffee steam
@@ -1567,7 +1277,7 @@ function drawTitle(){
   drawMuteBtn();
 }
 
-/** Draw the end-of-day summary: orders, earnings, combo, and decoration bonus. */
+// ── DRAW SCORE SCREEN ────────────────────────────────────────
 function drawScoreScreen(){
   pixRect(0,0,900,600,'#1a0f0a');
   pixText('DAY COMPLETE!',450,80,P.caramel,20,'center');
@@ -1598,14 +1308,7 @@ function drawScoreScreen(){
   drawMuteBtn();
 }
 
-/**
- * Draw the café upgrade shop.
- * Cards render in a 3×2 grid.  Owned items show a green banner;
- * affordable items highlight on hover; unaffordable items show the
- * shortfall in grey.  Purchasing deducts from G.money and adds the
- * id to G.decorations immediately so the background updates on the
- * next drawBG() call (visible behind the shop overlay).
- */
+// ── DRAW SHOP ────────────────────────────────────────────────
 function drawShop(){
   // Background — cozy shop view
   pixRect(0,0,900,600,'#1a0f0a');
@@ -1677,21 +1380,10 @@ function drawShop(){
   drawMuteBtn();
 }
 
-// ─────────────────────────────────────────────────────────────
-// INPUT HANDLING
-// All pointer events are normalised to 900×600 canvas space by
-// getCanvasPos() before being dispatched.  Drag (ingredient pickup
-// and drop) is handled separately from click so the two don't
-// conflict on mobile.
-// ─────────────────────────────────────────────────────────────
-/**
- * Route a tap/click to the correct handler based on G.state.
- * Always starts music first (satisfies browser autoplay policy
- * which requires audio context resume inside a user gesture).
- * @param {number} mx,my - Canvas-space coordinates.
- */
+// ── HANDLE CLICK ─────────────────────────────────────────────
 function handleClick(mx,my){
-  startMusic(); // must be inside user gesture to unblock AudioContext
+  // Start music on very first interaction (browser autoplay policy)
+  startMusic();
 
   // Mute button (top-right corner, always available)
   if(mx>=856&&mx<=896&&my>=2&&my<=26){ toggleMusic(); return; }
@@ -1755,18 +1447,6 @@ function handleClick(mx,my){
   }
 }
 
-/**
- * Complete the current order: validate recipe, calculate earnings,
- * update G.money, remove the customer, and reset build state.
- *
- * Tip tiers based on remaining patience ratio:
- *   >70% → $3 tip   (served quickly)
- *   40–70% → $1 tip (acceptable speed)
- *   <40% → $0 tip   (customer was getting impatient)
- *
- * After removal, the next customer in queue automatically becomes
- * active so the player can chain orders without re-selecting.
- */
 function serveDrink(){
   if(G.currentOrder===null||!activeDrink) return;
   const cust=G.queue[G.currentOrder];
@@ -1800,34 +1480,18 @@ function serveDrink(){
   if(G.currentOrder!==null) activeDrink=G.queue[0].drink;
 }
 
-// ─────────────────────────────────────────────────────────────
-// CUSTOMER SPAWNING
-// Spawn rate accelerates each day: interval = max(180−day×15, 80)
-// frames, so by day 7 the minimum 80-frame (~1.3 s) interval is
-// reached and stays constant for all later days.
-// ─────────────────────────────────────────────────────────────
+// ── SPAWN CUSTOMER ───────────────────────────────────────────
 let spawnTimer=0;
-/**
- * Called once per game frame.  Increments spawnTimer and pushes a
- * new customer when the threshold is met and the queue isn't full.
- */
 function maybeSpawnCustomer(){
   spawnTimer++;
-  const rate=Math.max(180-G.day*15,80); // frames between spawns
+  const rate=Math.max(180-G.day*15,80);
   if(spawnTimer>rate&&G.queue.length<G.maxQueue){
     G.queue.push(makeCustomer());
     spawnTimer=0;
   }
 }
 
-// ─────────────────────────────────────────────────────────────
-// TUTORIAL LOGIC
-// The tutorial reuses the full game rendering pipeline but wraps
-// all input in handleTutorialClick / tryPickUpIngredient guards
-// so only the highlighted action can be performed at each step.
-// Tutorial customers have patienceRate=0 so they never walk out.
-// ─────────────────────────────────────────────────────────────
-/** Reset all game state and enter the tutorial at step 0. */
+// ── TUTORIAL LOGIC ───────────────────────────────────────────
 function startTutorial(){
   G.state='tutorial';
   TUT.step=0;
@@ -1845,19 +1509,12 @@ function startTutorial(){
   G.combo=0;
 }
 
-/** Return the current tutorial step definition object, or undefined if complete. */
 function getTutStep(){ return TUT.steps[TUT.step]; }
 
-/**
- * Advance to the next tutorial step and set up the queue/order
- * state required by that step.  If the new step needs a drink,
- * inject a scripted tutorial customer with patienceRate=0.
- * If no drink is needed, clear the queue so the screen is clean.
- */
 function advanceTutorial(){
   TUT.step++;
   TUT.tutorialOrderPlaced=false;
-  // Inject a scripted customer if the next step involves a drink
+  // Place tutorial order if the new step needs one
   const s=TUT.steps[TUT.step];
   if(!s) return;
   if(s.drink&&(G.queue.length===0||(G.queue[0]&&G.queue[0].drink!==s.drink))){
@@ -1888,12 +1545,6 @@ function advanceTutorial(){
   }
 }
 
-/**
- * Handle clicks during tutorial mode.  Validates that the click
- * matches the expected action for the current step; if not,
- * shows a hint float-text instead of advancing.
- * @param {number} mx,my - Canvas-space coordinates.
- */
 function handleTutorialClick(mx,my){
   const s=getTutStep();
   if(!s) return;
@@ -1939,11 +1590,7 @@ function handleTutorialClick(mx,my){
   }
 }
 
-/**
- * Draw the tutorial overlay: full game scene with non-highlighted
- * stations dimmed, step-specific spotlight effects, the MEL speech
- * box at the top, and progress dots at the bottom-right.
- */
+// ── DRAW TUTORIAL ─────────────────────────────────────────────
 function drawTutorial(){
   drawBG();
   const s=getTutStep();
@@ -2020,14 +1667,7 @@ function drawTutorial(){
   ctx.globalAlpha=1;
 }
 
-// ─────────────────────────────────────────────────────────────
-// STATE TRANSITIONS
-// ─────────────────────────────────────────────────────────────
-/**
- * Begin Day 1 of actual gameplay (called at end of tutorial).
- * Resets all transient state; G.day and G.decorations are NOT
- * reset here so progression persists from the tutorial context.
- */
+// ── START / NEXT ─────────────────────────────────────────────
 function startGame(){
   G.state='game';
   G.queue=[];
@@ -2044,12 +1684,6 @@ function startGame(){
   G.station={};
 }
 
-/**
- * Advance to the next day.  maxTimer grows by 5 s per day so
- * later days give the player more time to handle the faster
- * customer spawn rate.  G.money is NOT reset — earnings carry
- * over so the player can save for expensive shop items.
- */
 function nextDay(){
   G.day++;
   G.state='game';
@@ -2067,21 +1701,9 @@ function nextDay(){
   G.station={};
 }
 
-// ─────────────────────────────────────────────────────────────
-// MOUSE / TOUCH INPUT
-// getCanvasPos normalises both mouse and touch events to the
-// 900×600 logical canvas space, accounting for CSS scaling.
-// mouseX/mouseY are updated on every move event so hover
-// states in draw functions read current pointer position.
-// ─────────────────────────────────────────────────────────────
+// ── MOUSE / TOUCH ────────────────────────────────────────────
 let mouseX=0, mouseY=0;
 
-/**
- * Convert a mouse or touch event to canvas-space coordinates.
- * Divides by the CSS-rendered size ratio so the game works
- * correctly at any display scale (responsive canvas).
- * @returns {{x: number, y: number}}
- */
 function getCanvasPos(e){
   const r=c.getBoundingClientRect();
   const touch=e.touches?e.touches[0]:e;
@@ -2146,16 +1768,8 @@ c.addEventListener('click',e=>{
   handleClick(p.x, p.y);
 });
 
-/**
- * Test whether a pointer-down hit a station and begin dragging.
- * In tutorial mode, only the currently highlighted station is
- * allowed; attempting any other station shows a redirecting hint.
- * Stations already completed for the current drink are rejected
- * immediately so duplicates can't be accidentally applied.
- * @param {number} mx,my - Canvas-space pointer coordinates.
- */
 function tryPickUpIngredient(mx, my){
-  if(!activeDrink || drag.flying) return; // ignore if no order or mid-flight
+  if(!activeDrink || drag.flying) return;
   for(const s of STATIONS){
     if(mx>=s.x && mx<=s.x+s.w && my>=s.y && my<=s.y+s.h){
       // In tutorial, only allow the highlighted station
@@ -2182,21 +1796,6 @@ function tryPickUpIngredient(mx, my){
   }
 }
 
-/**
- * Handle pointer-up: validate the drop target and start the fly
- * animation if correct, or show error feedback if wrong.
- *
- * Cup hit area is slightly larger than the visual cup (+20/+40 px)
- * for a forgiving drop zone.  If dropped outside the cup the
- * ingredient silently disappears — the player just tries again.
- *
- * Error cases shown here (before flying starts):
- *   - Station has a `needs` prerequisite not yet in buildSteps
- *   - Step already added (duplicate)
- *   - Out-of-order step (nextNeeded !== s.action)
- *
- * @param {number} mx,my - Canvas-space pointer coordinates.
- */
 function tryDropIngredient(mx, my){
   c.style.cursor='default';
   if(!drag.station || !activeDrink) return;
@@ -2206,7 +1805,7 @@ function tryDropIngredient(mx, my){
   const d=DRINKS[activeDrink];
   const nextNeeded=d.steps.find(step=>!buildSteps.includes(step));
 
-  // Generous hit box: cup width + 20 px sides, +20 px above, +20 px below
+  // Check drop on cup area
   const onCup = mx>=CUP_CX-CUP_W/2-20 && mx<=CUP_CX+CUP_W/2+40
              && my>=CUP_CY-CUP_H-20   && my<=CUP_CY+20;
 
@@ -2231,32 +1830,13 @@ function tryDropIngredient(mx, my){
       playErrorSound();
     }
   }
-  // Off-cup drop: ingredient vanishes — no penalty, player reattempts
+  // if dropped off-cup, ingredient just disappears (player tries again)
 }
 
-// ─────────────────────────────────────────────────────────────
-// MAIN LOOP
-// Uses requestAnimationFrame for smooth 60 fps rendering.
-// dt (delta-time in seconds) is used only for G.timer so the
-// countdown is frame-rate independent.  All animation (particles,
-// fly arc, fill levels) is frame-count based for simplicity.
-//
-// Update order each game frame:
-//   1. Decrement timer → end day if expired
-//   2. Maybe spawn a new customer
-//   3. Decay customer patience → handle walkouts & combo reset
-//   4. Tick station flash timers
-//   5. Advance flying ingredient animation
-//   6. Tick particles and float texts
-//   7. Draw everything (BG → stations → customers → cup → HUD → FX)
-// ─────────────────────────────────────────────────────────────
+// ── MAIN LOOP ────────────────────────────────────────────────
 let last=0;
-/**
- * Core game loop — called every animation frame by the browser.
- * @param {DOMHighResTimeStamp} ts - Current timestamp in milliseconds.
- */
 function loop(ts){
-  const dt=(ts-last)/1000; // seconds since last frame
+  const dt=(ts-last)/1000;
   last=ts;
 
   ctx.clearRect(0,0,900,600);
@@ -2299,7 +1879,7 @@ function loop(ts){
     const tx=100+i*210;
     if(cust.x>tx) cust.x=Math.max(cust.x-8,tx);
     if(cust.patience<=0){
-      // Customer walked out — break combo streak as punishment
+      // lost customer
       G.combo=0;
       addFloat('WALKED OUT!',(cust.x||tx),cust.y-20,P.bad);
       G.queue.splice(i,1);
@@ -2335,7 +1915,7 @@ function loop(ts){
   // DRAW
   drawBG();
 
-  // Pre-compute next required step so drawStation can highlight it without re-scanning
+  // Determine next needed action for highlighting
   const nextAction = activeDrink ? DRINKS[activeDrink].steps.find(s=>!buildSteps.includes(s)) : null;
 
   // Stations on left and right sides
