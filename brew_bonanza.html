@@ -1,0 +1,1976 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Brew Bonanza ☕</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+*{margin:0;padding:0;box-sizing:border-box;image-rendering:pixelated;}
+body{background:#1a0f0a;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;font-family:'Press Start 2P',monospace;overflow:hidden;}
+canvas{display:block;cursor:pointer;border:3px solid #3d2010;box-shadow:0 0 40px rgba(180,100,30,0.4);
+  width:min(100vw, 150vh);
+  height:auto;
+}
+#ui{position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;}
+</style>
+</head>
+<body>
+<canvas id="c" width="900" height="600"></canvas>
+<script>
+const c=document.getElementById('c');
+const ctx=c.getContext('2d');
+ctx.imageSmoothingEnabled=false;
+
+// ── PALETTE ──────────────────────────────────────────────────
+const P={
+  bg:'#2b1a0e', counter:'#3d2010', counterTop:'#6b3a1f',
+  wall:'#1a0f0a', wallDeco:'#2d1a0d',
+  wood:'#7a4520', woodLight:'#a05c2c',
+  cream:'#f5e6c8', milk:'#fff8ee',
+  espresso:'#1a0800', coffee:'#3d1a00', latte:'#c8814a',
+  mocha:'#3d1a0e', caramel:'#c87820',
+  steam:'rgba(255,255,255,0.15)',
+  cup:'#e8d5b0', cupDark:'#c4a87a',
+  btn:'#5c2d10', btnHover:'#7a3d16', btnText:'#f5e6c8',
+  score:'#f5c842', tip:'#4caf50',
+  bad:'#e53935', good:'#43a047',
+  customer1:'#e8a87c', customer2:'#c87040', customer3:'#a05030',
+  shirt1:'#5c8abf', shirt2:'#bf5c5c', shirt3:'#5cbf7a',
+  thought:'#fff8ee',
+};
+
+// ── SOUND ────────────────────────────────────────────────────
+const AudioCtx=window.AudioContext||window.webkitAudioContext;
+let audioCtx=null;
+function getAudio(){ if(!audioCtx) audioCtx=new AudioCtx(); return audioCtx; }
+
+// ── MUSIC ─────────────────────────────────────────────────────
+let musicStarted=false;
+let musicMuted=false;
+let masterGain=null;
+
+// Note frequencies (Hz)
+const NOTE={
+  C3:130.8,D3:146.8,E3:164.8,F3:174.6,G3:196,A3:220,B3:246.9,
+  C4:261.6,D4:293.7,E4:329.6,F4:349.2,G4:392,A4:440,B4:493.9,
+  C5:523.3,D5:587.3,E5:659.3,F5:698.5,G5:784,A5:880,B5:987.8,
+  Bb3:233.1,Bb4:466.2,Eb4:311.1,Ab4:415.3,Db4:277.2,
+  R:0 // rest
+};
+
+// Cozy jazz-bossa melody (flat array: freq, dur, freq, dur, ...)
+const MELODY_NOTES=[
+  NOTE.E5,0.5, NOTE.D5,0.5, NOTE.C5,1,   NOTE.E5,0.5, NOTE.G5,0.5, NOTE.A5,1,
+  NOTE.G5,0.5, NOTE.E5,0.5, NOTE.D5,1,   NOTE.C5,0.5, NOTE.D5,0.5, NOTE.E5,1,
+  NOTE.C5,1,   NOTE.Bb4,0.5,NOTE.A4,0.5, NOTE.G4,1.5, NOTE.R,0.5,
+  NOTE.A4,0.5, NOTE.G4,0.5, NOTE.E4,1,   NOTE.G4,0.5, NOTE.A4,0.5, NOTE.C5,1,
+  NOTE.D5,0.5, NOTE.E5,0.5, NOTE.G5,1,   NOTE.E5,0.5, NOTE.D5,0.5, NOTE.C5,1,
+  NOTE.E5,0.5, NOTE.G5,0.5, NOTE.A5,0.5, NOTE.G5,0.5, NOTE.E5,1,   NOTE.D5,1,
+  NOTE.C5,0.5, NOTE.D5,0.5, NOTE.E5,0.5, NOTE.D5,0.5, NOTE.C5,0.5, NOTE.A4,0.5, NOTE.G4,1,
+  NOTE.A4,0.5, NOTE.C5,0.5, NOTE.E5,1,   NOTE.D5,0.5, NOTE.C5,0.5, NOTE.G4,2,
+];
+
+// Walking bass line (2-bar loop)
+const BASS_NOTES=[
+  NOTE.C3,1, NOTE.E3,0.5, NOTE.G3,0.5,
+  NOTE.A3,1, NOTE.G3,0.5, NOTE.E3,0.5,
+  NOTE.F3,1, NOTE.A3,0.5, NOTE.C4,0.5,
+  NOTE.G3,1, NOTE.B3,0.5, NOTE.D4,0.5,
+];
+
+const BPM=108;
+const BEAT=60/BPM;
+
+function scheduleNote(ac, freq, startTime, dur, type='sine', vol=0.12, gainNode){
+  if(freq===0) return; // rest
+  const osc=ac.createOscillator();
+  const g=ac.createGain();
+  osc.connect(g);
+  g.connect(gainNode||ac.destination);
+  osc.type=type;
+  osc.frequency.setValueAtTime(freq, startTime);
+  // soft attack, quick decay to sustain, release
+  g.gain.setValueAtTime(0, startTime);
+  g.gain.linearRampToValueAtTime(vol, startTime+0.02);
+  g.gain.setValueAtTime(vol*0.7, startTime+dur*BEAT*0.3);
+  g.gain.exponentialRampToValueAtTime(0.001, startTime+dur*BEAT*0.92);
+  osc.start(startTime);
+  osc.stop(startTime+dur*BEAT+0.05);
+}
+
+function scheduleKick(ac, startTime, gainNode){
+  const osc=ac.createOscillator();
+  const g=ac.createGain();
+  osc.connect(g); g.connect(gainNode||ac.destination);
+  osc.type='sine';
+  osc.frequency.setValueAtTime(150,startTime);
+  osc.frequency.exponentialRampToValueAtTime(40,startTime+0.12);
+  g.gain.setValueAtTime(0.22,startTime);
+  g.gain.exponentialRampToValueAtTime(0.001,startTime+0.2);
+  osc.start(startTime); osc.stop(startTime+0.25);
+}
+
+function scheduleHihat(ac, startTime, vol=0.06, gainNode){
+  const buf=ac.createBuffer(1,ac.sampleRate*0.05,ac.sampleRate);
+  const data=buf.getChannelData(0);
+  for(let i=0;i<data.length;i++) data[i]=(Math.random()*2-1);
+  const src=ac.createBufferSource();
+  const filt=ac.createBiquadFilter();
+  const g=ac.createGain();
+  src.buffer=buf;
+  filt.type='highpass'; filt.frequency.value=8000;
+  src.connect(filt); filt.connect(g); g.connect(gainNode||ac.destination);
+  g.gain.setValueAtTime(vol,startTime);
+  g.gain.exponentialRampToValueAtTime(0.001,startTime+0.05);
+  src.start(startTime);
+}
+
+function scheduleSnare(ac, startTime, gainNode){
+  const buf=ac.createBuffer(1,ac.sampleRate*0.15,ac.sampleRate);
+  const data=buf.getChannelData(0);
+  for(let i=0;i<data.length;i++) data[i]=(Math.random()*2-1)*(1-i/data.length);
+  const src=ac.createBufferSource();
+  const filt=ac.createBiquadFilter();
+  const g=ac.createGain();
+  src.buffer=buf;
+  filt.type='bandpass'; filt.frequency.value=2000; filt.Q.value=0.8;
+  src.connect(filt); filt.connect(g); g.connect(gainNode||ac.destination);
+  g.gain.setValueAtTime(0.1,startTime);
+  g.gain.exponentialRampToValueAtTime(0.001,startTime+0.14);
+  src.start(startTime);
+}
+
+let musicLoopTimeout=null;
+let loopStartTime=0;
+
+function startMusic(){
+  if(musicStarted) return;
+  musicStarted=true;
+  const ac=getAudio();
+  masterGain=ac.createGain();
+  masterGain.gain.value=musicMuted?0:0.55;
+  masterGain.connect(ac.destination);
+  scheduleLoop(ac.currentTime+0.1);
+}
+
+function scheduleLoop(startTime){
+  if(!musicStarted) return;
+  const ac=getAudio();
+  loopStartTime=startTime;
+
+  // How many beats in one full melody loop
+  let melodyBeats=0;
+  for(let i=0;i<MELODY_NOTES.length;i+=2) melodyBeats+=MELODY_NOTES[i+1];
+
+  // ── Melody (vibraphone-ish sine with slight detune) ──
+  let t=startTime;
+  for(let i=0;i<MELODY_NOTES.length;i+=2){
+    const freq=MELODY_NOTES[i];
+    const dur=MELODY_NOTES[i+1];
+    scheduleNote(ac,freq,t,dur,'sine',0.13,masterGain);
+    // slight harmony a third below on longer notes
+    if(dur>=1&&freq>0){
+      scheduleNote(ac,freq*0.794,t+0.01,dur,'sine',0.04,masterGain);
+    }
+    t+=dur*BEAT;
+  }
+  const loopDur=t-startTime;
+
+  // ── Bass (triangle, warm) ─ loop it to fill melody length ──
+  let bt=startTime;
+  let bassBeats=0;
+  for(let i=0;i<BASS_NOTES.length;i+=2) bassBeats+=BASS_NOTES[i+1];
+  const bassLoops=Math.ceil(melodyBeats/bassBeats);
+  for(let rep=0;rep<bassLoops;rep++){
+    for(let i=0;i<BASS_NOTES.length;i+=2){
+      const freq=BASS_NOTES[i], dur=BASS_NOTES[i+1];
+      scheduleNote(ac,freq,bt,dur,'triangle',0.18,masterGain);
+      bt+=dur*BEAT;
+      if(bt>=startTime+loopDur) break;
+    }
+  }
+
+  // ── Chord stabs (every 2 beats, jazzy voicing) ──
+  const chords=[
+    [NOTE.C4,NOTE.E4,NOTE.G4],
+    [NOTE.A3,NOTE.C4,NOTE.E4],
+    [NOTE.F3,NOTE.A3,NOTE.C4],
+    [NOTE.G3,NOTE.B3,NOTE.D4],
+  ];
+  let ct=startTime;
+  let chord=0;
+  while(ct<startTime+loopDur-BEAT){
+    const ch=chords[chord%chords.length];
+    ch.forEach((freq,i)=>{
+      scheduleNote(ac,freq,ct+i*0.012,0.6,'triangle',0.04,masterGain);
+    });
+    chord++;
+    ct+=2*BEAT;
+  }
+
+  // ── Drums (bossa nova feel: kick on 1&3, snare on 2&4, hats on every half) ──
+  const beatsTotal=Math.ceil(melodyBeats);
+  for(let b=0;b<beatsTotal;b++){
+    const bt2=startTime+b*BEAT;
+    // hi-hat every half beat
+    scheduleHihat(ac,bt2,0.05,masterGain);
+    scheduleHihat(ac,bt2+BEAT*0.5,0.032,masterGain);
+    // kick beat 1 and 3
+    if(b%4===0||b%4===2) scheduleKick(ac,bt2,masterGain);
+    // snare beat 2 and 4
+    if(b%4===1||b%4===3) scheduleSnare(ac,bt2,masterGain);
+    // extra bossa kick on the "and" of 2
+    if(b%4===1) scheduleKick(ac,bt2+BEAT*0.5,masterGain);
+  }
+
+  // Schedule next loop slightly before this one ends
+  const scheduleAhead=loopDur-0.3;
+  musicLoopTimeout=setTimeout(()=>scheduleLoop(startTime+loopDur), scheduleAhead*1000);
+}
+
+function toggleMusic(){
+  musicMuted=!musicMuted;
+  if(masterGain){
+    const ac=getAudio();
+    masterGain.gain.setTargetAtTime(musicMuted?0:0.55, ac.currentTime, 0.3);
+  }
+}
+
+function playServeSound(tipLevel){
+  try{
+    const ac=getAudio();
+    const base=tipLevel>0?600:500;
+    const notes=tipLevel>1?[base,base*1.26,base*1.5,base*2]:[base,base*1.26,base*1.5];
+    notes.forEach((freq,i)=>{
+      const osc=ac.createOscillator();
+      const gain=ac.createGain();
+      osc.connect(gain); gain.connect(ac.destination);
+      osc.type='sine';
+      osc.frequency.setValueAtTime(freq,ac.currentTime+i*0.08);
+      gain.gain.setValueAtTime(0,ac.currentTime+i*0.08);
+      gain.gain.linearRampToValueAtTime(0.18,ac.currentTime+i*0.08+0.01);
+      gain.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+i*0.08+0.5);
+      osc.start(ac.currentTime+i*0.08);
+      osc.stop(ac.currentTime+i*0.08+0.6);
+    });
+  }catch(e){}
+}
+
+function playStepSound(){
+  try{
+    const ac=getAudio();
+    const osc=ac.createOscillator();
+    const gain=ac.createGain();
+    osc.connect(gain); gain.connect(ac.destination);
+    osc.type='square';
+    osc.frequency.setValueAtTime(220,ac.currentTime);
+    osc.frequency.linearRampToValueAtTime(330,ac.currentTime+0.06);
+    gain.gain.setValueAtTime(0.07,ac.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.15);
+    osc.start(ac.currentTime); osc.stop(ac.currentTime+0.18);
+  }catch(e){}
+}
+
+function playErrorSound(){
+  try{
+    const ac=getAudio();
+    const osc=ac.createOscillator();
+    const gain=ac.createGain();
+    osc.connect(gain); gain.connect(ac.destination);
+    osc.type='sawtooth';
+    osc.frequency.setValueAtTime(180,ac.currentTime);
+    osc.frequency.linearRampToValueAtTime(100,ac.currentTime+0.15);
+    gain.gain.setValueAtTime(0.08,ac.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.2);
+    osc.start(ac.currentTime); osc.stop(ac.currentTime+0.22);
+  }catch(e){}
+}
+const G={
+  state:'title', // title|tutorial|game|score|shop
+  day:1, score:0, money:0, combo:0,
+  queue:[], maxQueue:4,
+  currentOrder:null,
+  station:{},
+  heldItem:null,
+  particles:[],
+  floatTexts:[],
+  timer:0, maxTimer:90,
+  dayScore:0, ordersComplete:0,
+  bubble:null,
+  decorations:new Set(), // owned decoration ids
+  totalMoney:0,          // cumulative across days
+};
+
+// ── SHOP ITEMS ────────────────────────────────────────────────
+const SHOP_ITEMS=[
+  {
+    id:'plant',
+    name:'POTTED PLANT',
+    desc:'A lush fern on the\ncounter. Customers love it!',
+    icon:'🪴', price:8,
+    bonus:0.008, // patience rate reduction per tick
+    bonusDesc:'+8% patience',
+  },
+  {
+    id:'painting',
+    name:'WALL PAINTING',
+    desc:'A cozy abstract piece.\nSets the mood perfectly.',
+    icon:'🖼️', price:12,
+    bonus:0.010,
+    bonusDesc:'+10% patience',
+  },
+  {
+    id:'fairy_lights',
+    name:'FAIRY LIGHTS',
+    desc:'String lights above the\ncounter. So charming!',
+    icon:'✨', price:15,
+    bonus:0.012,
+    bonusDesc:'+12% patience',
+  },
+  {
+    id:'rug',
+    name:'COZY RUG',
+    desc:'A patterned rug by\nthe door. Very welcoming.',
+    icon:'🪷', price:10,
+    bonus:0.009,
+    bonusDesc:'+9% patience',
+  },
+  {
+    id:'chalkboard',
+    name:'CHALKBOARD',
+    desc:'Specials written in\nloopy chalk. Very cute!',
+    icon:'🪧', price:18,
+    bonus:0.014,
+    bonusDesc:'+14% patience',
+  },
+  {
+    id:'bookshelf',
+    name:'BOOKSHELF',
+    desc:'A shelf of worn novels.\nCustomers feel at home.',
+    icon:'📚', price:22,
+    bonus:0.016,
+    bonusDesc:'+16% patience',
+  },
+];
+
+// ── TUTORIAL STATE ───────────────────────────────────────────
+const TUT={
+  step:0,
+  steps:[
+    {
+      msg:"Welcome to Brew Bonanza!\nYou're the new barista.\nLet's learn the ropes!",
+      subMsg:'CLICK ANYWHERE TO CONTINUE',
+      highlight:null, drink:null, action:'next'
+    },
+    {
+      msg:"Customers line up with\ndrink orders shown in\ntheir thought bubbles.",
+      subMsg:'CLICK ANYWHERE TO CONTINUE',
+      highlight:null, drink:null, action:'next'
+    },
+    {
+      msg:"CLICK a customer's\nthought bubble to\ntake their order.",
+      subMsg:'▲ CLICK THE THOUGHT BUBBLE ▲',
+      highlight:'queue', drink:'espresso', action:'select_order'
+    },
+    {
+      msg:"Great! The cup appears\nin the center. Now\nDRAG ingredients to it!",
+      subMsg:'CLICK ANYWHERE TO CONTINUE',
+      highlight:null, drink:'espresso', action:'next'
+    },
+    {
+      msg:"First: grab the GRINDER\non the left and drag\nit onto the cup!",
+      subMsg:'◀ DRAG GRINDER ⚙️ TO THE CUP',
+      highlight:'grinder', drink:'espresso', action:'do_step', expectStep:'grind'
+    },
+    {
+      msg:"Beans ground! Now drag\nthe ESPRESSO machine\nto pull a shot!",
+      subMsg:'◀ DRAG ESPRESSO ☕ TO THE CUP',
+      highlight:'espresso', drink:'espresso', action:'do_step', expectStep:'espresso'
+    },
+    {
+      msg:"Perfect shot! Click\nthe SERVE button\nbelow the cup!",
+      subMsg:'▼ CLICK SERVE BUTTON ▼',
+      highlight:'serve_btn', drink:'espresso', action:'serve'
+    },
+    {
+      msg:"You served your first\ndrink! Let's try a\nLATTE — 3 steps!",
+      subMsg:'CLICK ANYWHERE TO CONTINUE',
+      highlight:null, drink:null, action:'next'
+    },
+    {
+      msg:"Click the new customer's\nbubble to take\nthe latte order.",
+      subMsg:'▲ CLICK THE THOUGHT BUBBLE ▲',
+      highlight:'queue', drink:'latte', action:'select_order'
+    },
+    {
+      msg:"Latte = Grind + Shot\n+ Steamed Milk.\nDrag GRINDER first!",
+      subMsg:'◀ DRAG GRINDER ⚙️ TO THE CUP',
+      highlight:'grinder', drink:'latte', action:'do_step', expectStep:'grind'
+    },
+    {
+      msg:"Now the espresso shot.",
+      subMsg:'◀ DRAG ESPRESSO ☕ TO THE CUP',
+      highlight:'espresso', drink:'latte', action:'do_step', expectStep:'espresso'
+    },
+    {
+      msg:"Last step: drag the\nSTEAMER to add\nsilky steamed milk!",
+      subMsg:'◀ DRAG STEAMER 💨 TO THE CUP',
+      highlight:'steamer', drink:'latte', action:'do_step', expectStep:'steam_milk'
+    },
+    {
+      msg:"Latte done! Hit SERVE\nto deliver it!",
+      subMsg:'▼ CLICK SERVE BUTTON ▼',
+      highlight:'serve_btn', drink:'latte', action:'serve'
+    },
+    {
+      msg:"Brilliant! Tips depend\non how fast you serve.\nGold bar = patience!",
+      subMsg:'CLICK ANYWHERE TO CONTINUE',
+      highlight:null, drink:null, action:'next'
+    },
+    {
+      msg:"Ingredients are on the\nleft and right sides.\nThey glow when needed!",
+      subMsg:'CLICK ANYWHERE TO CONTINUE',
+      highlight:null, drink:null, action:'next'
+    },
+    {
+      msg:"Ready to open?\nGood luck, barista!\n☕ Go brew!",
+      subMsg:'► CLICK TO START DAY 1 ◄',
+      highlight:null, drink:null, action:'start_game'
+    },
+  ],
+  tutorialOrderPlaced:false,
+  arrowBlink:0,
+};
+
+// ── DRINKS MENU ──────────────────────────────────────────────
+const DRINKS={
+  espresso:{name:'ESPRESSO',steps:['grind','espresso'],color:'#1a0800',foamColor:null,label:'☕',price:3},
+  latte:{name:'LATTE',steps:['grind','espresso','steam_milk'],color:'#c8814a',foamColor:'#fff8ee',label:'🥛',price:5},
+  cappuccino:{name:'CAPPUCCINO',steps:['grind','espresso','steam_milk','foam'],color:'#a05c2c',foamColor:'#fff8ee',label:'☁️',price:5},
+  mocha:{name:'MOCHA',steps:['grind','espresso','chocolate','steam_milk'],color:'#3d1a0e',foamColor:'#c87820',label:'🍫',price:6},
+  caramel_latte:{name:'CARAMEL LATTE',steps:['grind','espresso','caramel','steam_milk'],color:'#c87820',foamColor:'#f5c842',label:'🍮',price:7},
+  cold_brew:{name:'COLD BREW',steps:['grind','cold_brew','ice'],color:'#1a0a00',foamColor:null,label:'🧊',price:6},
+};
+
+const DRINK_KEYS=Object.keys(DRINKS);
+
+// ── STATIONS ─────────────────────────────────────────────────
+// Left column (x~18) and right column (x~810), 4 each side
+const STATION_W=90, STATION_H=66;
+const STATIONS=[
+  {id:'grinder',  x:10,  y:300, w:STATION_W, h:STATION_H, label:'GRINDER',  icon:'⚙️', action:'grind',      col:'#3d2010'},
+  {id:'espresso', x:10,  y:372, w:STATION_W, h:STATION_H, label:'ESPRESSO', icon:'☕', action:'espresso',   col:'#2a1008', needs:'grind'},
+  {id:'steamer',  x:10,  y:444, w:STATION_W, h:STATION_H, label:'STEAMER',  icon:'💨', action:'steam_milk', col:'#1a2a3a'},
+  {id:'foamer',   x:10,  y:516, w:STATION_W, h:STATION_H, label:'FOAMER',   icon:'☁️', action:'foam',       col:'#2a2a3a'},
+  {id:'choc',     x:800, y:300, w:STATION_W, h:STATION_H, label:'CHOCO',    icon:'🍫', action:'chocolate',  col:'#1a0800'},
+  {id:'caramel',  x:800, y:372, w:STATION_W, h:STATION_H, label:'CARAMEL',  icon:'🍮', action:'caramel',    col:'#2a1800'},
+  {id:'ice',      x:800, y:444, w:STATION_W, h:STATION_H, label:'ICE',      icon:'🧊', action:'ice',        col:'#0a1a2a'},
+  {id:'cold',     x:800, y:516, w:STATION_W, h:STATION_H, label:'COLD BREW',icon:'🫙', action:'cold_brew',  col:'#0d0800', needs:'grind'},
+];
+
+// Cup is fixed in center
+const CUP_CX=450, CUP_CY=500;
+const CUP_W=100, CUP_H=120;
+
+// ── CUPS & BUILD STATE ───────────────────────────────────────
+let buildSteps=[];
+let activeDrink=null;
+
+// ── INGREDIENT DRAG STATE ────────────────────────────────────
+// drag = an ingredient token being dragged from a station to the cup
+const drag={
+  active:false,
+  station:null,     // STATIONS entry being dragged from
+  x:0, y:0,        // current drag position
+  startX:0, startY:0,
+  offsetX:0, offsetY:0,
+  // splash animation when dropped
+  splashing:false,
+  splashTimer:0,
+  splashMax:45,
+  splashX:0, splashY:0,
+  splashAction:null,
+  // flying-in arc animation
+  flying:false,
+  flyTimer:0,
+  flyMax:30,
+  flyFromX:0, flyFromY:0,
+};
+
+function resetCup(){
+  drag.active=false;
+  drag.flying=false;
+  drag.splashing=false;
+  drag.station=null;
+  Object.keys(G.station).forEach(k=>{ if(k.startsWith('fill_')) delete G.station[k]; });
+}
+
+// ── CUSTOMERS ────────────────────────────────────────────────
+const NAMES=['ALEX','MIRA','JAKE','LUNA','OMAR','ZARA','KAI','NORA'];
+const HAIR_COLORS=['#1a0a00','#3d1a00','#c87820','#e8c870','#8b4040','#2a3a5a','#cc6688'];
+const HAIR_STYLES=['short','long','curly','mohawk','bun','cap'];
+const PANTS_COLORS=['#2a3a6a','#1a2a1a','#3a1a1a','#2a2a2a','#5a3a1a'];
+const ACCESSORIES=['none','none','none','glasses','earring','hat'];
+
+function makeCustomer(){
+  const dk=DRINK_KEYS[Math.floor(Math.random()*DRINK_KEYS.length)];
+  // Sum up patience bonuses from owned decorations
+  let bonus=0;
+  G.decorations.forEach(id=>{
+    const item=SHOP_ITEMS.find(s=>s.id===id);
+    if(item) bonus+=item.bonus;
+  });
+  const baseRate=0.018+G.day*0.002;
+  return {
+    name:NAMES[Math.floor(Math.random()*NAMES.length)],
+    drink:dk,
+    drinkData:DRINKS[dk],
+    patience:100,
+    patienceMax:100,
+    patienceRate:Math.max(baseRate-bonus, 0.004),
+    x:920, tx:0, y:255,
+    skin:[P.customer1,P.customer2,P.customer3][Math.floor(Math.random()*3)],
+    color:[P.customer1,P.customer2,P.customer3][Math.floor(Math.random()*3)], // keep for compat
+    shirt:[P.shirt1,P.shirt2,P.shirt3][Math.floor(Math.random()*3)],
+    pants:PANTS_COLORS[Math.floor(Math.random()*PANTS_COLORS.length)],
+    hairColor:HAIR_COLORS[Math.floor(Math.random()*HAIR_COLORS.length)],
+    hairStyle:HAIR_STYLES[Math.floor(Math.random()*HAIR_STYLES.length)],
+    accessory:ACCESSORIES[Math.floor(Math.random()*ACCESSORIES.length)],
+    done:false,
+    expression:'meh',
+    slideIn:true,
+  };
+}
+
+// ── PIXEL DRAWING HELPERS ────────────────────────────────────
+function pixRect(x,y,w,h,col){
+  ctx.fillStyle=col;
+  ctx.fillRect(Math.round(x),Math.round(y),w,h);
+}
+function pixText(txt,x,y,col,size=8,align='left'){
+  ctx.font=`${size}px 'Press Start 2P'`;
+  ctx.fillStyle=col;
+  ctx.textAlign=align;
+  ctx.fillText(txt,Math.round(x),Math.round(y));
+}
+function pixOutlineRect(x,y,w,h,fill,stroke,sw=2){
+  ctx.fillStyle=fill; ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle=stroke; ctx.lineWidth=sw; ctx.strokeRect(x+sw/2,y+sw/2,w-sw,h-sw);
+}
+
+// ── DRAW STATION ─────────────────────────────────────────────
+function drawStation(s, hover, isNext=false, isDone=false){
+  // Background panel
+  const col = isDone ? '#1a2a10' : hover ? '#6a3510' : s.col||P.btn;
+  pixOutlineRect(s.x, s.y, s.w, s.h, col, isDone?'#4a8a20':isNext?'#f5c842':'#7a4520', isNext?3:2);
+
+  // top accent strip
+  pixRect(s.x+3, s.y+3, s.w-6, 5, 'rgba(255,255,255,0.07)');
+
+  // emoji icon (large)
+  ctx.font='28px serif';
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(s.icon, s.x+s.w/2, s.y+s.h/2-8);
+  ctx.textBaseline='alphabetic';
+
+  // label
+  pixText(s.label, s.x+s.w/2, s.y+s.h-8, isDone?'#8dc870':P.cream, 6, 'center');
+
+  // done checkmark
+  if(isDone){
+    ctx.fillStyle='rgba(100,200,60,0.25)';
+    ctx.fillRect(s.x,s.y,s.w,s.h);
+    pixText('✓', s.x+s.w-10, s.y+14, '#8dc870', 9, 'center');
+  }
+
+  // pulsing gold glow for next needed
+  if(isNext && !isDone){
+    const pulse=0.4+0.4*Math.sin(Date.now()/180);
+    ctx.strokeStyle=`rgba(255,220,50,${pulse})`;
+    ctx.lineWidth=3;
+    ctx.strokeRect(s.x-3, s.y-3, s.w+6, s.h+6);
+    ctx.fillStyle=`rgba(255,220,50,${pulse*0.12})`;
+    ctx.fillRect(s.x, s.y, s.w, s.h);
+    // arrow pointing inward toward center
+    const arrowX = s.x > 400 ? s.x-14 : s.x+s.w+14;
+    const arrowChar = s.x > 400 ? '◀' : '▶';
+    const ay=s.y+s.h/2+4;
+    pixText(arrowChar, arrowX, ay, `rgba(255,220,50,${pulse})`, 11, 'center');
+  }
+
+  // flash when just used
+  if(G.station[s.id]>0){
+    ctx.fillStyle=`rgba(255,200,80,${G.station[s.id]/30*0.35})`;
+    ctx.fillRect(s.x,s.y,s.w,s.h);
+  }
+}
+
+// ── DRAW CUP ─────────────────────────────────────────────────
+function drawCup(x,y,drink,steps,size=1){
+  const W=28*size, H=36*size;
+  // cup body
+  pixRect(x-W/2,y-H,W,H,P.cup);
+  pixRect(x-W/2,y-H,2,H,P.cupDark);
+  pixRect(x+W/2-2,y-H,2,H,P.cupDark);
+  pixRect(x-W/2,y-2,W,2,P.cupDark);
+  if(!drink) return;
+  const d=DRINKS[drink];
+  if(!d) return;
+  // fill level based on steps
+  const stepsDone=steps.length;
+  const stepsNeeded=d.steps.length;
+  const fillH=Math.round((stepsDone/stepsNeeded)*(H-4));
+  if(fillH>0){
+    pixRect(x-W/2+2,y-2-fillH,W-4,fillH,d.color);
+  }
+  // foam
+  if(steps.includes('foam')||steps.includes('steam_milk')){
+    pixRect(x-W/2+2,y-2-fillH,W-4,4,d.foamColor||P.milk);
+  }
+  // caramel drizzle
+  if(steps.includes('caramel')){
+    ctx.fillStyle=P.caramel;
+    for(let i=0;i<3;i++) ctx.fillRect(x-8+i*8,y-H+6,2,fillH-4);
+  }
+  // ice
+  if(steps.includes('ice')){
+    ctx.fillStyle='rgba(180,230,255,0.6)';
+    ctx.fillRect(x-8,y-12,6,8);
+    ctx.fillRect(x+2,y-16,6,8);
+  }
+  // steam
+  if(steps.includes('espresso')||steps.includes('steam_milk')){
+    drawSteam(x,y-H-4,size);
+  }
+}
+
+function drawSteam(x,y,s=1){
+  for(let i=0;i<3;i++){
+    const t=Date.now()/600+i*0.8;
+    const ox=Math.sin(t)*4*s;
+    ctx.fillStyle=`rgba(255,255,255,${0.08+Math.sin(t)*0.04})`;
+    ctx.fillRect(x-4*s+ox+i*6*s,y-12*s*(i%2),2,8*s);
+  }
+}
+
+// ── DRAW CUSTOMER ────────────────────────────────────────────
+function drawCustomer(cust, cx, idx){
+  const x=cx, y=cust.y;
+  const active=(G.currentOrder===idx);
+  const pat=cust.patience/cust.patienceMax;
+  const skin=cust.skin||cust.color;
+  const hc=cust.hairColor||'#1a0a00';
+  const pants=cust.pants||'#2a3a6a';
+  const shirt=cust.shirt;
+
+  // ── SHOES ──
+  pixRect(x-13,y-4,11,7,'#1a1a1a');   // left shoe
+  pixRect(x+3,y-4,11,7,'#1a1a1a');    // right shoe
+  pixRect(x-13,y-4,11,3,'#2a2a2a');   // shoe highlight
+
+  // ── LEGS ──
+  pixRect(x-12,y-28,10,24,pants);     // left leg
+  pixRect(x+2,y-28,10,24,pants);      // right leg
+  // trouser crease shading
+  pixRect(x-4,y-28,2,22,'rgba(0,0,0,0.15)');
+  pixRect(x+2,y-28,2,22,'rgba(0,0,0,0.15)');
+
+  // ── BODY / TORSO ──
+  pixRect(x-14,y-68,28,40,shirt);
+  // shirt shading — darker on sides
+  pixRect(x-14,y-68,4,40,'rgba(0,0,0,0.18)');
+  pixRect(x+10,y-68,4,40,'rgba(0,0,0,0.18)');
+  // shirt highlight strip
+  pixRect(x-2,y-68,4,40,'rgba(255,255,255,0.1)');
+  // collar
+  pixRect(x-5,y-68,10,5,skin);
+  pixRect(x-3,y-68,6,3,'rgba(0,0,0,0.1)');
+
+  // ── ARMS ──
+  // left arm (slightly in front)
+  pixRect(x-20,y-66,8,22,shirt);
+  pixRect(x-20,y-66,3,22,'rgba(0,0,0,0.15)');
+  // left hand
+  pixRect(x-20,y-46,8,10,skin);
+  // right arm
+  pixRect(x+12,y-66,8,22,shirt);
+  pixRect(x+17,y-66,3,22,'rgba(0,0,0,0.15)');
+  // right hand
+  pixRect(x+12,y-46,8,10,skin);
+
+  // ── HEAD ──
+  const hy=y-100;
+  // head shadow under chin
+  pixRect(x-13,y-72,26,6,'rgba(0,0,0,0.12)');
+  // main head
+  pixRect(x-13,hy,26,30,skin);
+  // head shading — right side darker
+  pixRect(x+8,hy,5,30,'rgba(0,0,0,0.12)');
+  // forehead highlight
+  pixRect(x-10,hy+2,8,6,'rgba(255,255,255,0.18)');
+  // ears
+  pixRect(x-16,hy+10,4,8,skin);
+  pixRect(x+13,hy+10,4,8,skin);
+  pixRect(x-16,hy+12,3,4,'rgba(0,0,0,0.1)');
+
+  // ── EYES ──
+  const ey=hy+11;
+  // eye whites
+  pixRect(x-9,ey,8,7,'#fff8f0');
+  pixRect(x+2,ey,8,7,'#fff8f0');
+  // irises — color varies by patience
+  const irisCol=pat>0.5?'#3a6aaa':'#aa4a3a';
+  pixRect(x-7,ey+1,4,5,irisCol);
+  pixRect(x+4,ey+1,4,5,irisCol);
+  // pupils
+  pixRect(x-6,ey+2,2,3,'#0a0500');
+  pixRect(x+5,ey+2,2,3,'#0a0500');
+  // eye shine
+  pixRect(x-6,ey+2,1,1,'#fff');
+  pixRect(x+5,ey+2,1,1,'#fff');
+  // upper eyelid line
+  pixRect(x-9,ey,8,2,'rgba(0,0,0,0.3)');
+  pixRect(x+2,ey,8,2,'rgba(0,0,0,0.3)');
+
+  // ── NOSE ──
+  pixRect(x-1,ey+8,3,2,'rgba(0,0,0,0.2)');
+
+  // ── MOUTH ──
+  const my2=hy+22;
+  if(pat>0.65){
+    // big smile
+    pixRect(x-6,my2,12,2,'#5a1a1a');
+    pixRect(x-8,my2-2,2,2,'#5a1a1a');
+    pixRect(x+6,my2-2,2,2,'#5a1a1a');
+    pixRect(x-6,my2,3,3,'#f5d0c0'); // teeth peek
+    pixRect(x-2,my2,3,3,'#f5d0c0');
+    pixRect(x+2,my2,3,3,'#f5d0c0');
+  } else if(pat>0.35){
+    // neutral
+    pixRect(x-5,my2,10,2,'#5a1a1a');
+  } else {
+    // frown
+    pixRect(x-6,my2,12,2,'#5a1a1a');
+    pixRect(x-8,my2+2,2,2,'#5a1a1a');
+    pixRect(x+6,my2+2,2,2,'#5a1a1a');
+  }
+  // cheek blush (happy)
+  if(pat>0.65){
+    ctx.fillStyle='rgba(255,120,100,0.2)';
+    ctx.fillRect(x-11,my2-3,6,5);
+    ctx.fillRect(x+6,my2-3,6,5);
+  }
+
+  // ── HAIR ──
+  const hs=cust.hairStyle||'short';
+  if(hs==='short'){
+    pixRect(x-13,hy,26,8,hc);
+    pixRect(x-15,hy+4,4,8,hc);
+    pixRect(x+11,hy+4,4,8,hc);
+    pixRect(x-13,hy,26,3,'rgba(255,255,255,0.12)');
+  } else if(hs==='long'){
+    pixRect(x-13,hy,26,8,hc);
+    pixRect(x-15,hy+2,5,28,hc);   // left side falls
+    pixRect(x+10,hy+2,5,28,hc);   // right side falls
+    pixRect(x-15,hy+2,2,28,'rgba(255,255,255,0.1)');
+    pixRect(x-13,hy,26,3,'rgba(255,255,255,0.12)');
+  } else if(hs==='curly'){
+    pixRect(x-14,hy,28,10,hc);
+    pixRect(x-16,hy+2,5,14,hc);
+    pixRect(x+11,hy+2,5,14,hc);
+    pixRect(x-12,hy-4,6,6,hc);
+    pixRect(x-4,hy-6,8,6,hc);
+    pixRect(x+6,hy-4,6,6,hc);
+    // curly texture
+    pixRect(x-10,hy+2,3,3,'rgba(255,255,255,0.15)');
+    pixRect(x+4,hy,3,3,'rgba(255,255,255,0.15)');
+  } else if(hs==='mohawk'){
+    pixRect(x-13,hy,26,5,hc);
+    pixRect(x-3,hy-14,6,16,hc);   // spike
+    pixRect(x-5,hy-10,2,12,hc);
+    pixRect(x+3,hy-10,2,12,hc);
+    pixRect(x-2,hy-14,2,3,'rgba(255,255,255,0.25)');
+  } else if(hs==='bun'){
+    pixRect(x-13,hy,26,6,hc);
+    pixRect(x-15,hy+3,4,10,hc);
+    pixRect(x+11,hy+3,4,10,hc);
+    // bun on top
+    ctx.fillStyle=hc;
+    ctx.beginPath(); ctx.arc(x,hy-4,9,0,Math.PI*2); ctx.fill();
+    ctx.fillStyle='rgba(255,255,255,0.15)';
+    ctx.beginPath(); ctx.arc(x-2,hy-6,3,0,Math.PI*2); ctx.fill();
+  } else if(hs==='cap'){
+    // baseball cap
+    pixRect(x-13,hy+4,26,6,'#3a2a5a');   // band
+    pixRect(x-12,hy-2,24,8,'#4a3a7a');   // dome
+    pixRect(x-16,hy+8,30,4,'#3a2a5a');   // brim
+    pixRect(x-12,hy-2,8,3,'rgba(255,255,255,0.1)');
+  }
+
+  // ── ACCESSORY ──
+  const acc=cust.accessory||'none';
+  if(acc==='glasses'){
+    ctx.strokeStyle='#3a2a10'; ctx.lineWidth=1.5;
+    ctx.strokeRect(x-10,ey,8,7);
+    ctx.strokeRect(x+2,ey,8,7);
+    pixRect(x-2,ey+3,4,2,'#3a2a10');  // bridge
+    pixRect(x-14,ey+3,4,2,'#3a2a10'); // left arm
+    pixRect(x+10,ey+3,4,2,'#3a2a10'); // right arm
+  } else if(acc==='earring'){
+    ctx.fillStyle='#f5c842';
+    ctx.beginPath(); ctx.arc(x-14,hy+18,3,0,Math.PI*2); ctx.fill();
+  } else if(acc==='hat'){
+    // top hat  
+    pixRect(x-10,hy-14,20,6,'#2a1a3a');
+    pixRect(x-7,hy-8,14,8,'#2a1a3a');
+    pixRect(x-13,hy-2,26,3,'#2a1a3a');
+    pixRect(x-10,hy-12,4,3,'rgba(255,255,255,0.12)');
+  }
+
+  // ── THOUGHT BUBBLE ──
+  const bw=90, bh=76;
+  const tbx=x-bw/2, tby=y-100-bh-16;
+  if(active){
+    ctx.fillStyle='rgba(255,200,50,0.18)';
+    ctx.fillRect(tbx-4,tby-4,bw+8,bh+8);
+    ctx.strokeStyle=P.score; ctx.lineWidth=2;
+    ctx.strokeRect(tbx-4,tby-4,bw+8,bh+8);
+  }
+  // bubble with rounded feel via stacked rects
+  pixRect(tbx+4,tby,bw-8,bh,P.thought);
+  pixRect(tbx,tby+4,bw,bh-8,P.thought);
+  pixRect(tbx+2,tby+2,bw-4,bh-4,P.thought);
+  ctx.strokeStyle='#c4a87a'; ctx.lineWidth=2;
+  ctx.strokeRect(tbx+2,tby+2,bw-4,bh-4);
+  // bubble tail
+  pixRect(x-4,tby+bh,6,5,P.thought);
+  pixRect(x-3,tby+bh+5,4,4,P.thought);
+  pixRect(x-2,tby+bh+9,3,3,P.thought);
+
+  pixText(cust.drinkData.name,x,tby+14,P.espresso,6,'center');
+  ctx.font='26px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(cust.drinkData.label, x, tby+38);
+  ctx.textBaseline='alphabetic';
+  drawCup(x,tby+bh-4,cust.drink,[],0.62);
+
+  // ── PATIENCE BAR ──
+  const pbw=bw, pbx=tbx;
+  const pby=tby+bh+14;
+  pixRect(pbx,pby,pbw,8,'#1a0000');
+  const pCol=pat>0.6?P.good:pat>0.3?P.caramel:P.bad;
+  pixRect(pbx,pby,Math.round(pbw*pat),8,pCol);
+  // bar shine
+  pixRect(pbx,pby,Math.round(pbw*pat),3,'rgba(255,255,255,0.2)');
+  ctx.strokeStyle='#333'; ctx.lineWidth=1; ctx.strokeRect(pbx,pby,pbw,8);
+
+  pixText(cust.name,x,pby+18,active?P.caramel:P.cream,6,'center');
+
+  if(!active && Math.floor(Date.now()/700)%2===0)
+    pixText('TAP',x,tby-10,P.score,7,'center');
+}
+
+// Returns click bounds for a customer's order bubble
+function customerBubbleBounds(cust){
+  const bw=90, bh=76;
+  const tbx=cust.x-bw/2, tby=cust.y-100-bh-16;
+  return {x1:tbx-6, y1:tby-6, x2:tbx+bw+6, y2:tby+bh+22};
+}
+
+// ── PARTICLES ────────────────────────────────────────────────
+function spawnParticles(x,y,col,n=8){
+  for(let i=0;i<n;i++){
+    const a=Math.random()*Math.PI*2;
+    const sp=1+Math.random()*3;
+    G.particles.push({x,y,dx:Math.cos(a)*sp,dy:Math.sin(a)*sp-2,life:1,col,size:3+Math.random()*4});
+  }
+}
+
+function addFloat(txt,x,y,col){
+  G.floatTexts.push({txt,x,y:y,vy:-1.5,life:1,col});
+}
+
+// ── DRAW BACKGROUND ──────────────────────────────────────────
+function drawBG(){
+  // wall
+  pixRect(0,0,900,260,P.wall);
+  // brick pattern
+  for(let row=0;row<6;row++){
+    const off=row%2*40;
+    for(let col=0;col<12;col++){
+      ctx.strokeStyle='#251208';
+      ctx.lineWidth=1;
+      ctx.strokeRect(col*80-off,row*40+20,78,18);
+    }
+  }
+  // window
+  pixOutlineRect(320,30,180,120,'#1a3040','#3d6080',3);
+  // window panes
+  pixRect(320,88,180,3,'#3d6080');
+  pixRect(408,30,3,120,'#3d6080');
+  // window light
+  ctx.fillStyle='rgba(150,200,255,0.07)';
+  ctx.fillRect(323,33,85,84);
+  ctx.fillStyle='rgba(150,200,255,0.04)';
+  ctx.fillRect(411,33,86,84);
+  // menu board
+  pixOutlineRect(580,20,200,140,'#1a0f00','#7a4520',3);
+  pixText('MENU',678,42,P.caramel,10,'center');
+  const menuItems=['ESPRESSO $3','LATTE $5','CAPPUCCINO $5','MOCHA $6','CARAMEL $7','COLD BREW $6'];
+  menuItems.forEach((m,i)=>pixText(m,588,62+i*18,P.cream,7));
+  // floor
+  pixRect(0,540,900,60,'#2d1a0d');
+  for(let i=0;i<10;i++) pixRect(i*90+2,542,86,56,'#321c0f');
+  // counter back wall
+  pixRect(0,260,900,40,P.counterTop);
+  for(let i=0;i<900;i+=60) pixRect(i,260,58,40,P.wood);
+  // counter front
+  pixRect(0,430,900,110,P.counter);
+  pixRect(0,430,900,8,P.woodLight);
+  // sign
+  pixOutlineRect(50,25,220,60,'#3d1a00','#7a3d10',3);
+  pixText('☕ BREW BONANZA',160,50,P.caramel,9,'center');
+  pixText('PIXEL COFFEE CO.',160,68,P.cream,7,'center');
+  // decorative coffee beans
+  for(let i=0;i<5;i++){
+    ctx.fillStyle='#3d1a00';
+    ctx.beginPath();
+    ctx.ellipse(760+i*12,25+Math.sin(i)*6,5,8,Math.PI/4+i*0.5,0,Math.PI*2);
+    ctx.fill();
+  }
+
+  // ── OWNED DECORATIONS ────────────────────────────────────────
+  if(G.decorations.has('plant')){
+    // Potted plant on counter left side
+    pixRect(232,418,22,14,'#8b4513'); // pot
+    pixRect(234,416,18,4,'#a0522d');  // pot rim
+    ctx.fillStyle='#2d6a1a'; ctx.font='28px serif'; ctx.textAlign='center';
+    ctx.fillText('🪴',243,418);
+  }
+  if(G.decorations.has('painting')){
+    // Painting on wall left of window
+    pixOutlineRect(100,30,100,80,'#2a1a40','#7a4a8a',3);
+    // abstract art inside
+    pixRect(106,36,88,68,'#1e1030');
+    ctx.fillStyle='#ff6b6b'; ctx.fillRect(115,44,25,20);
+    ctx.fillStyle='#6bcfff'; ctx.fillRect(148,50,18,28);
+    ctx.fillStyle='#ffdd57'; ctx.fillRect(128,62,30,14);
+    ctx.fillStyle='rgba(255,255,255,0.12)';
+    ctx.fillRect(106,36,10,68); // frame glare
+    pixText('🖼️',150,26,P.cream,7,'center');
+  }
+  if(G.decorations.has('fairy_lights')){
+    // String lights strung above counter
+    const t=Date.now()/400;
+    for(let i=0;i<18;i++){
+      const lx=30+i*48;
+      const ly=272+Math.sin(i*0.8)*4;
+      ctx.strokeStyle='#5a4010'; ctx.lineWidth=1;
+      if(i<17){ ctx.beginPath(); ctx.moveTo(lx,ly); ctx.lineTo(lx+48,ly+Math.sin((i+1)*0.8)*4-Math.sin(i*0.8)*4); ctx.stroke(); }
+      const cols=['#ff6','#f96','#9cf','#fcf','#9f9'];
+      const on=Math.sin(t+i*0.7)>-0.3;
+      ctx.fillStyle=on?cols[i%cols.length]:'#333';
+      ctx.beginPath(); ctx.arc(lx,ly+6,4,0,Math.PI*2); ctx.fill();
+      if(on){ ctx.fillStyle='rgba(255,255,150,0.15)'; ctx.beginPath(); ctx.arc(lx,ly+6,9,0,Math.PI*2); ctx.fill(); }
+    }
+  }
+  if(G.decorations.has('rug')){
+    // Colorful rug on the floor
+    pixRect(50,545,400,48,'#8b1a3a');
+    // rug pattern
+    for(let i=0;i<8;i++) pixRect(50+i*50,545,2,48,'#c04060');
+    pixRect(50,558,400,4,'#e8a030');
+    pixRect(50,570,400,4,'#e8a030');
+    pixRect(50,545,400,3,'#e8a030');
+    pixRect(50,590,400,3,'#e8a030');
+    // rug fringe
+    for(let i=0;i<20;i++){ pixRect(50+i*20,593,2,5,'#e8c080'); pixRect(50+i*20,542,2,5,'#e8c080'); }
+  }
+  if(G.decorations.has('chalkboard')){
+    // Chalkboard on wall right of window (between window and menu)
+    pixOutlineRect(512,25,60,110,'#1a2a1a','#3a5a2a',3);
+    pixRect(516,29,52,102,'#1e3020');
+    // chalk writing
+    ctx.fillStyle='rgba(240,240,220,0.8)'; ctx.font='6px Press Start 2P';
+    ctx.textAlign='center';
+    ctx.fillText('SPECIALS',542,46);
+    ctx.fillText('TODAY:',542,58);
+    ctx.fillStyle='rgba(255,220,80,0.9)';
+    ctx.fillText('CARAMEL',542,72);
+    ctx.fillText('LATTE',542,82);
+    ctx.fillText('$7 ♥',542,94);
+    ctx.fillStyle='rgba(200,240,200,0.7)';
+    ctx.fillText('+ FREE',542,108);
+    ctx.fillText('SMILE :)',542,118);
+  }
+  if(G.decorations.has('bookshelf')){
+    // Bookshelf on wall far left
+    pixOutlineRect(8,28,80,100,'#3d1a00','#7a4520',2);
+    pixRect(10,30,76,96,'#2a1200');
+    // shelves
+    pixRect(10,55,76,4,P.wood);
+    pixRect(10,83,76,4,P.wood);
+    pixRect(10,111,76,4,P.wood);
+    // books
+    const bookCols=['#c84040','#4060c8','#40a840','#c8a020','#a040a0','#40a8a8'];
+    for(let row=0;row<3;row++){
+      let bx=12;
+      for(let b=0;b<5;b++){
+        const bw=8+Math.floor(Math.random()*6);// fixed per render
+        const bwFixed=[10,8,12,9,11][b];
+        pixRect(bx,row*28+32,bwFixed,20,bookCols[(row*5+b)%bookCols.length]);
+        pixRect(bx,row*28+32,2,20,'rgba(255,255,255,0.1)');
+        bx+=bwFixed+1;
+      }
+    }
+  }
+}
+
+// ── DRAW CENTERED CUP ────────────────────────────────────────
+function drawCenteredCup(){
+  if(!activeDrink) return;
+  const d=DRINKS[activeDrink];
+  const cx=CUP_CX, cy=CUP_CY;
+  const W=CUP_W, H=CUP_H;
+
+  // Saucer
+  pixRect(cx-W/2-12, cy+4, W+24, 10, P.cupDark);
+  pixRect(cx-W/2-16, cy+8, W+32, 6, P.cup);
+
+  // Cup shadow
+  ctx.fillStyle='rgba(0,0,0,0.25)';
+  ctx.fillRect(cx-W/2+6, cy+6, W, 10);
+
+  // Cup body
+  pixRect(cx-W/2, cy-H, W, H+4, P.cup);
+  // side shading
+  pixRect(cx-W/2, cy-H, 8, H+4, P.cupDark);
+  pixRect(cx+W/2-8, cy-H, 8, H+4, P.cupDark);
+  // bottom rim
+  pixRect(cx-W/2, cy, W, 6, P.cupDark);
+
+  // Liquid layers
+  const totalSteps=d.steps.length;
+  const maxFillH=H-8;
+  const layerH=Math.floor(maxFillH/totalSteps);
+  d.steps.forEach((step,i)=>{
+    if(!buildSteps.includes(step)) return;
+    let col=d.color;
+    if(step==='steam_milk'||step==='foam') col=d.foamColor||P.milk;
+    if(step==='chocolate') col='#2a0a00';
+    if(step==='caramel') col=P.caramel;
+    if(step==='ice') col='rgba(180,230,255,0.85)';
+    if(step==='grind') col='#1a0600';
+    if(step==='cold_brew') col='#0d0400';
+    const fillKey='fill_'+step;
+    if(!G.station[fillKey]) G.station[fillKey]=0;
+    G.station[fillKey]=Math.min(G.station[fillKey]+5, layerH);
+    const fh=G.station[fillKey];
+    const layerTop=cy-4-(i+1)*layerH;
+    pixRect(cx-W/2+8, layerTop+(layerH-fh), W-16, fh, col);
+    // caramel drizzle
+    if(step==='caramel'){
+      ctx.fillStyle='#d07010';
+      for(let j=0;j<4;j++) ctx.fillRect(cx-W/2+14+j*18, layerTop, 3, fh);
+    }
+    // ice cubes
+    if(step==='ice'){
+      ctx.fillStyle='rgba(220,245,255,0.8)';
+      ctx.fillRect(cx-22, cy-18, 16, 14); ctx.fillRect(cx+6, cy-22, 14, 12);
+      ctx.strokeStyle='rgba(160,210,240,0.5)'; ctx.lineWidth=1;
+      ctx.strokeRect(cx-22,cy-18,16,14); ctx.strokeRect(cx+6,cy-22,14,12);
+    }
+  });
+
+  // Foam cap
+  if(buildSteps.includes('foam')||buildSteps.includes('steam_milk')){
+    const nDone=buildSteps.filter(s=>d.steps.includes(s)).length;
+    const foamY=cy-4-nDone*layerH;
+    pixRect(cx-W/2+8, foamY-10, W-16, 14, d.foamColor||P.milk);
+    ctx.fillStyle='rgba(255,255,255,0.65)';
+    for(let j=0;j<7;j++) ctx.fillRect(cx-W/2+12+j*12, foamY-8, 8, 8);
+  }
+
+  // Cup outline on top
+  ctx.strokeStyle=P.cupDark; ctx.lineWidth=4;
+  ctx.strokeRect(cx-W/2, cy-H, W, H+4);
+
+  // Handle
+  pixRect(cx+W/2, cy-H+18, 18, 7, P.cupDark);
+  pixRect(cx+W/2, cy-22, 18, 7, P.cupDark);
+  pixRect(cx+W/2+14, cy-H+18, 6, H-36, P.cupDark);
+
+  // Steam
+  if(buildSteps.includes('espresso')||buildSteps.includes('steam_milk')){
+    for(let i=0;i<5;i++){
+      const t=Date.now()/500+i*1.2;
+      ctx.fillStyle=`rgba(255,255,255,${0.08+Math.sin(t)*0.04})`;
+      ctx.fillRect(cx-24+i*14+Math.sin(t)*8, cy-H-10-i*10, 5,14);
+    }
+  }
+
+  // Splash animation
+  if(drag.splashing){
+    const p=1-drag.splashTimer/drag.splashMax;
+    const splashCols={grind:'#3d1a00',espresso:'#1a0800',steam_milk:P.milk,foam:P.milk,
+                      chocolate:'#2a0800',caramel:P.caramel,ice:'rgba(180,230,255,0.8)',cold_brew:'#0d0400'};
+    const sc=splashCols[drag.splashAction]||d.color;
+    // ripple ring
+    ctx.strokeStyle=sc; ctx.lineWidth=3;
+    ctx.globalAlpha=1-p;
+    ctx.beginPath(); ctx.arc(cx, cy-H+10, 20+p*30, 0, Math.PI*2); ctx.stroke();
+    ctx.globalAlpha=1;
+    // splash drops
+    for(let i=0;i<8;i++){
+      const a=i*Math.PI/4+p*2;
+      const r=p*40;
+      ctx.fillStyle=sc;
+      ctx.globalAlpha=(1-p)*0.9;
+      ctx.fillRect(cx+Math.cos(a)*r-3, cy-H+Math.sin(a)*r*0.4, 6, 6);
+    }
+    ctx.globalAlpha=1;
+    drag.splashTimer--;
+    if(drag.splashTimer<=0) drag.splashing=false;
+  }
+
+  // Drink name + step progress below cup
+  pixText(d.name, cx, cy+30, P.caramel, 9, 'center');
+  const done=buildSteps.filter(s=>d.steps.includes(s)).length;
+  const total=d.steps.length;
+  // step dots
+  for(let i=0;i<total;i++){
+    const dx=cx-(total-1)*12+i*24;
+    ctx.fillStyle=i<done?P.good:'#3a1800';
+    ctx.beginPath(); ctx.arc(dx, cy+44, 7, 0, Math.PI*2); ctx.fill();
+    if(i<done){ pixText('✓', dx, cy+48, '#fff', 7, 'center'); }
+    else {
+      ctx.font='10px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.fillText(STATIONS.find(s=>s.action===d.steps[i])?.icon||'?', dx, cy+44);
+      ctx.textBaseline='alphabetic';
+    }
+  }
+
+  // Serve button when complete
+  if(done===total){
+    const bx=cx-75, by=cy+56, bw=150, bh=36;
+    const bHov=mouseX>=bx&&mouseX<=bx+bw&&mouseY>=by&&mouseY<=by+bh;
+    const pulse=0.5+0.5*Math.sin(Date.now()/220);
+    pixOutlineRect(bx, by, bw, bh, bHov?'#2a6a10':'#1a4a08', `rgba(100,220,60,${pulse})`, 2);
+    pixText('☕ SERVE!', cx, by+bh-10, '#c8ff80', 10, 'center');
+  }
+}
+
+// ── DRAW DRAGGED INGREDIENT TOKEN ────────────────────────────
+function drawIngredientDrag(){
+  if(!drag.active&&!drag.flying) return;
+  const s=drag.station;
+  if(!s) return;
+
+  let tx=drag.x, ty=drag.y;
+  // flying arc toward cup — just interpolate position for drawing
+  if(drag.flying){
+    const p=Math.min(drag.flyTimer/drag.flyMax, 1);
+    tx=drag.flyFromX+(CUP_CX-drag.flyFromX)*p;
+    ty=drag.flyFromY+(CUP_CY-CUP_H-10-drag.flyFromY)*p - Math.sin(p*Math.PI)*60;
+  }
+
+  // Token circle
+  const r=26;
+  ctx.fillStyle='rgba(0,0,0,0.25)';
+  ctx.beginPath(); ctx.arc(tx+4, ty+4, r, 0, Math.PI*2); ctx.fill();
+  ctx.fillStyle=s.col||P.btn;
+  ctx.beginPath(); ctx.arc(tx, ty, r, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle='rgba(255,220,100,0.8)'; ctx.lineWidth=2;
+  ctx.beginPath(); ctx.arc(tx, ty, r, 0, Math.PI*2); ctx.stroke();
+  ctx.font='24px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(s.icon, tx, ty);
+  ctx.textBaseline='alphabetic';
+}
+
+function applyIngredient(s){
+  if(!activeDrink||G.currentOrder===null) return;
+  const d=DRINKS[activeDrink];
+  const nextNeeded=d.steps.find(step=>!buildSteps.includes(step));
+  if(nextNeeded===s.action){
+    buildSteps.push(s.action);
+    G.station[s.id]=30;
+    playStepSound();
+    spawnParticles(CUP_CX, CUP_CY-CUP_H, P.caramel, 10);
+    addFloat('+'+s.action.toUpperCase().replace(/_/g,' ')+'!', CUP_CX, CUP_CY-CUP_H-30, P.tip);
+    drag.splashing=true;
+    drag.splashTimer=drag.splashMax;
+    drag.splashAction=s.action;
+    // Advance tutorial if this was the expected step
+    if(G.state==='tutorial'){
+      const ts=getTutStep();
+      if(ts&&ts.action==='do_step'&&buildSteps.includes(ts.expectStep)){
+        setTimeout(advanceTutorial, 500);
+      }
+    }
+  }
+}
+
+// ── DRAW ORDER QUEUE ─────────────────────────────────────────
+function drawQueue(){
+  // Orders are shown on customer heads — just draw a small label if queue has people
+  if(G.queue.length>0 && G.currentOrder===null){
+    if(Math.floor(Date.now()/700)%2===0)
+      pixText('▲ CLICK A CUSTOMER TO TAKE ORDER',450,420,P.score,8,'center');
+  }
+}
+
+// ── DRAW HUD ─────────────────────────────────────────────────
+function drawHUD(){
+  pixRect(0,0,900,28,'#0d0600');
+  pixText(`DAY ${G.day}`,10,20,P.cream,9);
+  pixText(`$${G.money}`,180,20,P.score,9);
+  pixText(`ORDERS: ${G.ordersComplete}`,340,20,P.cream,9);
+  const tw=240, tx=590;
+  pixRect(tx,5,tw,18,'#1a0a00');
+  const tp=G.timer/G.maxTimer;
+  const tcol=tp>0.5?P.good:tp>0.25?P.caramel:P.bad;
+  pixRect(tx,5,Math.round(tw*tp),18,tcol);
+  ctx.strokeStyle='#3d1a00'; ctx.lineWidth=1; ctx.strokeRect(tx,5,tw,18);
+  pixText('TIME',tx-52,20,P.cream,8);
+  drawMuteBtn();
+}
+
+function drawMuteBtn(){
+  const bx=856,by=2,bw=40,bh=24;
+  pixOutlineRect(bx,by,bw,bh,musicMuted?'#3a1a00':'#1a3a1a',musicMuted?'#7a3a00':'#2a6a2a',1);
+  ctx.font='14px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.fillText(musicMuted?'🔇':'🎵', bx+bw/2, by+bh/2);
+  ctx.textBaseline='alphabetic';
+}
+
+// ── DRAW TITLE ───────────────────────────────────────────────
+function drawTitle(){
+  pixRect(0,0,900,600,'#1a0f0a');
+  // animated coffee steam
+  for(let i=0;i<5;i++){
+    const t=Date.now()/800+i*1.2;
+    ctx.fillStyle=`rgba(255,255,255,${0.05+Math.sin(t)*0.03})`;
+    ctx.fillRect(380+Math.sin(t)*10+i*28,200+Math.sin(t+i)*8,6,30);
+  }
+  // big cup
+  pixRect(380,240,140,120,P.cup);
+  pixRect(380,240,8,120,P.cupDark);
+  pixRect(512,240,8,120,P.cupDark);
+  pixRect(380,352,140,8,P.cupDark);
+  pixRect(388,278,124,74,P.espresso);
+  pixRect(388,278,124,8,P.milk);
+  // handle
+  pixRect(520,280,20,8,P.cupDark);
+  pixRect(520,336,20,8,P.cupDark);
+  pixRect(528,280,8,64,P.cupDark);
+  // saucer
+  pixRect(360,356,180,12,P.cupDark);
+  pixRect(356,362,188,8,P.cup);
+  // title
+  const t2=Math.sin(Date.now()/600)*2;
+  pixText('BREW',450,160+t2,P.caramel,40,'center');
+  pixText('BONANZA',450,210+t2,P.cream,24,'center');
+  pixText('☕ PIXEL COFFEE CO ☕',450,390,P.cream,10,'center');
+  if(Math.floor(Date.now()/600)%2===0)
+    pixText('► CLICK TO START TUTORIAL ◄',450,445,P.score,12,'center');
+  pixText('SERVE COFFEE. EARN TIPS. SURVIVE.',450,495,'#666',8,'center');
+  pixText('TUTORIAL INCLUDED — LEARN AS YOU BREW',450,516,'#555',7,'center');
+  drawMuteBtn();
+}
+
+// ── DRAW SCORE SCREEN ────────────────────────────────────────
+function drawScoreScreen(){
+  pixRect(0,0,900,600,'#1a0f0a');
+  pixText('DAY COMPLETE!',450,80,P.caramel,20,'center');
+  pixText(`DAY ${G.day}`,450,118,P.cream,12,'center');
+  pixRect(150,132,600,3,P.wood);
+
+  pixText(`ORDERS SERVED: ${G.ordersComplete}`,450,170,P.cream,10,'center');
+  pixText(`MONEY EARNED: $${G.money}`,450,204,P.score,10,'center');
+  pixText(`COMBO BEST: x${G.combo}`,450,238,P.tip,10,'center');
+
+  if(G.decorations.size>0){
+    let totalBonus=0;
+    G.decorations.forEach(id=>{ const it=SHOP_ITEMS.find(s=>s.id===id); if(it) totalBonus+=it.bonus; });
+    pixText(`PATIENCE BONUS: -${Math.round(totalBonus*1000)/10}%/tick`,450,268,P.caramel,8,'center');
+  }
+
+  pixRect(150,282,600,3,P.wood);
+
+  // Two buttons: SHOP and NEXT DAY
+  const shopHover=mouseX>=140&&mouseX<=440&&mouseY>=310&&mouseY<=370;
+  const nextHover=mouseX>=460&&mouseX<=760&&mouseY>=310&&mouseY<=370;
+  pixOutlineRect(140,310,300,60,shopHover?'#3a2a60':'#2a1a40','#7a5ab0',2);
+  pixText('🛍️ VISIT SHOP',290,348,P.cream,10,'center');
+  pixOutlineRect(460,310,300,60,nextHover?'#1a4a1a':'#0a2a0a','#3a8a3a',2);
+  pixText('▶ NEXT DAY',610,348,P.cream,10,'center');
+
+  pixText('VISIT THE SHOP TO UPGRADE YOUR CAFÉ!',450,408,'#666',7,'center');
+  drawMuteBtn();
+}
+
+// ── DRAW SHOP ────────────────────────────────────────────────
+function drawShop(){
+  // Background — cozy shop view
+  pixRect(0,0,900,600,'#1a0f0a');
+  drawBG();
+
+  // Dark overlay panel
+  ctx.fillStyle='rgba(10,5,0,0.82)';
+  ctx.fillRect(30,28,840,548);
+
+  pixText('☕ CAFÉ UPGRADES ☕',450,70,P.caramel,16,'center');
+  pixText(`BUDGET: $${G.money}`,450,100,P.score,10,'center');
+  pixRect(60,112,780,3,P.wood);
+
+  const cols=3, rows=2;
+  const cardW=240, cardH=185, padX=30, padY=22;
+  const gridX=60, gridY=128;
+
+  SHOP_ITEMS.forEach((item,i)=>{
+    const col=i%cols, row=Math.floor(i/cols);
+    const cx=gridX+col*(cardW+padX);
+    const cy=gridY+row*(cardH+padY);
+    const owned=G.decorations.has(item.id);
+    const canAfford=G.money>=item.price;
+    const hover=!owned&&mouseX>=cx&&mouseX<=cx+cardW&&mouseY>=cy&&mouseY<=cy+cardH;
+
+    // Card bg
+    const cardCol=owned?'#0a2a0a':hover&&canAfford?'#1a1a3a':'#12080a';
+    const borderCol=owned?'#3a8a3a':hover&&canAfford?'#6060c0':'#3d1a00';
+    pixOutlineRect(cx,cy,cardW,cardH,cardCol,borderCol,2);
+
+    // Owned banner
+    if(owned){
+      pixRect(cx,cy,cardW,18,'#1a4a1a');
+      pixText('✓ OWNED',cx+cardW/2,cy+13,P.tip,7,'center');
+    }
+
+    // Icon
+    ctx.font='36px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(item.icon, cx+cardW/2, cy+(owned?52:42));
+    ctx.textBaseline='alphabetic';
+
+    // Name
+    pixText(item.name, cx+cardW/2, cy+(owned?80:70), P.cream, 8, 'center');
+
+    // Description lines
+    item.desc.split('\n').forEach((line,li)=>{
+      pixText(line, cx+cardW/2, cy+(owned?98:88)+li*16, '#aaa', 6, 'center');
+    });
+
+    // Bonus
+    pixText(item.bonusDesc, cx+cardW/2, cy+(owned?130:120), P.tip, 7, 'center');
+
+    // Price / buy button
+    if(!owned){
+      const btnY=cy+cardH-34;
+      const affordable=canAfford;
+      pixOutlineRect(cx+20,btnY,cardW-40,26,affordable?'#1a3a60':'#2a1a1a',affordable?'#4a8ad0':'#4a2a2a',1);
+      pixText(affordable?`BUY $${item.price}`:`$${item.price} (NEED $${item.price-G.money} MORE)`,
+        cx+cardW/2, btnY+18, affordable?P.cream:'#666', affordable?8:6, 'center');
+    }
+  });
+
+  // Bottom buttons
+  const closeHover=mouseX>=310&&mouseX<=590&&mouseY>=528&&mouseY<=568;
+  pixOutlineRect(310,528,280,40,closeHover?'#2a1000':'#1a0800',closeHover?'#c07030':'#7a4020',2);
+  pixText('▶ START NEXT DAY',450,554,P.cream,9,'center');
+
+  pixText(`TOTAL UPGRADES: ${G.decorations.size}/${SHOP_ITEMS.length}`,450,518,'#555',7,'center');
+  drawMuteBtn();
+}
+
+// ── HANDLE CLICK ─────────────────────────────────────────────
+function handleClick(mx,my){
+  // Start music on very first interaction (browser autoplay policy)
+  startMusic();
+
+  // Mute button (top-right corner, always available)
+  if(mx>=856&&mx<=896&&my>=2&&my<=26){ toggleMusic(); return; }
+
+  if(G.state==='title'){ startTutorial(); return; }
+  if(G.state==='score'){
+    // Shop button
+    if(mx>=140&&mx<=440&&my>=310&&my<=370){ G.state='shop'; return; }
+    // Next day button
+    if(mx>=460&&mx<=760&&my>=310&&my<=370){ nextDay(); return; }
+    return;
+  }
+  if(G.state==='shop'){
+    // Close/next day
+    if(mx>=310&&mx<=590&&my>=528&&my<=568){ nextDay(); return; }
+    // Buy items
+    const cols=3, cardW=240, cardH=185, padX=30, padY=22;
+    const gridX=60, gridY=128;
+    SHOP_ITEMS.forEach((item,i)=>{
+      const col=i%cols, row=Math.floor(i/cols);
+      const cx=gridX+col*(cardW+padX);
+      const cy=gridY+row*(cardH+padY);
+      if(mx>=cx&&mx<=cx+cardW&&my>=cy&&my<=cy+cardH){
+        if(!G.decorations.has(item.id)&&G.money>=item.price){
+          G.money-=item.price;
+          G.decorations.add(item.id);
+          playServeSound(2);
+          addFloat(''+item.icon+' PURCHASED!',450,300,P.tip);
+        } else if(G.decorations.has(item.id)){
+          addFloat('ALREADY OWNED!',450,300,'#999');
+        } else {
+          addFloat('NOT ENOUGH $!',450,300,P.bad);
+          playErrorSound();
+        }
+      }
+    });
+    return;
+  }
+  if(G.state==='tutorial'){ handleTutorialClick(mx,my); return; }
+  if(G.state!=='game') return;
+
+  // Click customer thought bubble to take order
+  G.queue.forEach((cust,i)=>{
+    const b=customerBubbleBounds(cust);
+    if(mx>=b.x1&&mx<=b.x2&&my>=b.y1&&my<=b.y2){
+      G.currentOrder=i;
+      activeDrink=cust.drink;
+      buildSteps=[];
+      resetCup();
+    }
+  });
+
+  // Serve button (shown when drink complete)
+  if(activeDrink){
+    const d=DRINKS[activeDrink];
+    const done=buildSteps.filter(s=>d.steps.includes(s)).length;
+    if(done===d.steps.length){
+      const bx=CUP_CX-75, by=CUP_CY+56, bw=150, bh=36;
+      if(mx>=bx&&mx<=bx+bw&&my>=by&&my<=by+bh) serveDrink();
+    }
+  }
+}
+
+function serveDrink(){
+  if(G.currentOrder===null||!activeDrink) return;
+  const cust=G.queue[G.currentOrder];
+  if(!cust) return;
+  const d=DRINKS[activeDrink];
+  // check completeness
+  const allDone=d.steps.every(step=>buildSteps.includes(step));
+  if(!allDone){
+    addFloat('NOT READY!',840,430,P.bad);
+    playErrorSound();
+    return;
+  }
+  // score
+  const pat=cust.patience/cust.patienceMax;
+  const tip=pat>0.7?3:pat>0.4?1:0;
+  const earned=d.price+tip;
+  G.money+=earned;
+  G.ordersComplete++;
+  G.combo++;
+  playServeSound(tip);
+  const x=60+G.currentOrder*210+90;
+  addFloat(`+$${earned}${tip>0?' TIP!':''}`,x,430,tip>0?P.tip:P.score);
+  if(G.combo>1) addFloat(`COMBO x${G.combo}!`,450,400,P.caramel);
+  spawnParticles(x,450,'#f5c842',12);
+  cust.done=true;
+  G.queue.splice(G.currentOrder,1);
+  activeDrink=null;
+  buildSteps=[];
+  resetCup();
+  G.currentOrder=G.queue.length>0?0:null;
+  if(G.currentOrder!==null) activeDrink=G.queue[0].drink;
+}
+
+// ── SPAWN CUSTOMER ───────────────────────────────────────────
+let spawnTimer=0;
+function maybeSpawnCustomer(){
+  spawnTimer++;
+  const rate=Math.max(180-G.day*15,80);
+  if(spawnTimer>rate&&G.queue.length<G.maxQueue){
+    G.queue.push(makeCustomer());
+    spawnTimer=0;
+  }
+}
+
+// ── TUTORIAL LOGIC ───────────────────────────────────────────
+function startTutorial(){
+  G.state='tutorial';
+  TUT.step=0;
+  TUT.tutorialOrderPlaced=false;
+  TUT.arrowBlink=0;
+  G.queue=[];
+  G.currentOrder=null;
+  activeDrink=null;
+  buildSteps=[];
+  G.particles=[];
+  G.floatTexts=[];
+  G.station={};
+  G.money=0;
+  G.ordersComplete=0;
+  G.combo=0;
+}
+
+function getTutStep(){ return TUT.steps[TUT.step]; }
+
+function advanceTutorial(){
+  TUT.step++;
+  TUT.tutorialOrderPlaced=false;
+  // Place tutorial order if the new step needs one
+  const s=TUT.steps[TUT.step];
+  if(!s) return;
+  if(s.drink&&(G.queue.length===0||(G.queue[0]&&G.queue[0].drink!==s.drink))){
+    const tutCust={
+      name:'TUTORIAL',
+      drink:s.drink,
+      drinkData:DRINKS[s.drink],
+      patience:100, patienceMax:100,
+      patienceRate:0,
+      x:80, tx:80, y:255,
+      skin:P.customer1, color:P.customer1,
+      shirt:P.shirt2,
+      pants:'#2a3a6a',
+      hairColor:'#c87820',
+      hairStyle:'bun',
+      accessory:'none',
+      done:false, expression:'meh',
+    };
+    G.queue=[tutCust];
+    G.currentOrder=null;
+    activeDrink=null;
+    buildSteps=[];
+  } else if(!s.drink){
+    G.queue=[];
+    G.currentOrder=null;
+    activeDrink=null;
+    buildSteps=[];
+  }
+}
+
+function handleTutorialClick(mx,my){
+  const s=getTutStep();
+  if(!s) return;
+
+  if(s.action==='next'||s.action==='start_game'){
+    if(s.action==='start_game'){ startGame(); return; }
+    advanceTutorial(); return;
+  }
+
+  if(s.action==='select_order'){
+    if(G.queue.length>0){
+      const b=customerBubbleBounds(G.queue[0]);
+      if(mx>=b.x1&&mx<=b.x2&&my>=b.y1&&my<=b.y2){
+        G.currentOrder=0;
+        activeDrink=G.queue[0].drink;
+        buildSteps=[]; resetCup();
+        spawnParticles(G.queue[0].x,G.queue[0].y-120,P.caramel);
+        advanceTutorial(); return;
+      }
+    }
+    addFloat('CLICK THE THOUGHT BUBBLE!',450,220,P.score); return;
+  }
+
+  if(s.action==='do_step'){
+    const targetStation=STATIONS.find(st=>st.id===s.highlight);
+    if(targetStation&&mx>=targetStation.x&&mx<=targetStation.x+targetStation.w&&
+       my>=targetStation.y&&my<=targetStation.y+targetStation.h){
+      addFloat('DRAG ME TO THE CUP!', targetStation.x+targetStation.w/2, targetStation.y-14, P.score);
+    }
+    return;
+  }
+
+  if(s.action==='serve'){
+    const bx=CUP_CX-75,by=CUP_CY+56,bw=150,bh=36;
+    if(mx>=bx&&mx<=bx+bw&&my>=by&&my<=by+bh){
+      serveDrink();
+      G.queue=[]; G.currentOrder=null; activeDrink=null; buildSteps=[]; resetCup();
+      advanceTutorial();
+    } else {
+      addFloat('CLICK THE SERVE BUTTON!',CUP_CX,CUP_CY+40,P.score);
+    }
+    return;
+  }
+}
+
+// ── DRAW TUTORIAL ─────────────────────────────────────────────
+function drawTutorial(){
+  drawBG();
+  const s=getTutStep();
+
+  // Stations — dim non-highlighted ones
+  STATIONS.forEach(st=>{
+    const isHighlight=s&&s.highlight===st.id;
+    const isDone=activeDrink&&buildSteps.includes(st.action)&&DRINKS[activeDrink]?.steps.includes(st.action);
+    const hover=mouseX>=st.x&&mouseX<=st.x+st.w&&mouseY>=st.y&&mouseY<=st.y+st.h;
+    drawStation(st, hover&&isHighlight, isHighlight&&!isDone, isDone);
+    if(!isHighlight&&!isDone&&s&&s.highlight&&s.highlight!=='queue'&&s.highlight!=='serve_btn'){
+      ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(st.x,st.y,st.w,st.h);
+    }
+  });
+
+  // Highlight customer bubble
+  if(s&&s.highlight==='queue'&&G.queue.length>0){
+    const b=customerBubbleBounds(G.queue[0]);
+    const pulse=0.5+0.5*Math.sin(Date.now()/200);
+    ctx.strokeStyle=P.score; ctx.lineWidth=3; ctx.globalAlpha=0.5+pulse*0.5;
+    ctx.strokeRect(b.x1,b.y1,b.x2-b.x1,b.y2-b.y1); ctx.globalAlpha=1;
+    pixText('▼',G.queue[0].x,b.y1-10+Math.sin(Date.now()/300)*5,P.score,14,'center');
+  }
+
+  G.queue.forEach((cust,i)=>{ drawCustomer(cust,cust.x||80,i); });
+  drawQueue();
+  drawCenteredCup();
+
+  // Serve button pulse highlight
+  if(s&&s.highlight==='serve_btn'&&activeDrink){
+    const d=DRINKS[activeDrink];
+    if(buildSteps.filter(st=>d.steps.includes(st)).length===d.steps.length){
+      const pulse=0.5+0.5*Math.sin(Date.now()/180);
+      ctx.strokeStyle=`rgba(100,255,60,${pulse})`; ctx.lineWidth=3;
+      ctx.strokeRect(CUP_CX-78,CUP_CY+53,156,42);
+      pixText('▲ CLICK HERE!',CUP_CX,CUP_CY+52,`rgba(100,255,60,${pulse})`,8,'center');
+    }
+  }
+
+  drawIngredientDrag();
+
+  // Speech box — top strip just below HUD, clear of all game elements
+  if(s){
+    pixOutlineRect(0,28,900,78,'#140800','#7a4520',2);
+    // Chef Mel avatar
+    pixRect(6,32,52,70,'#3d1a00'); pixRect(10,34,44,66,P.shirt1);
+    pixRect(14,34,36,20,P.customer2);
+    pixRect(18,38,6,4,'#1a0a00'); pixRect(28,38,6,4,'#1a0a00');
+    pixRect(16,46,14,2,'#1a0a00'); pixRect(18,32,20,4,'#1a0a00');
+    pixText('MEL',36,32,'#999',5,'center');
+    // Message lines
+    s.msg.split('\n').forEach((line,i)=>{ pixText(line,68,46+i*16,P.cream,8); });
+    // Blinking sub-message on right side
+    if(Math.floor(Date.now()/500)%2===0)
+      pixText(s.subMsg,870,92,P.score,7,'right');
+    // Progress dots bottom-right
+    const nd=TUT.steps.length;
+    for(let i=0;i<nd;i++){
+      const pulse=i===TUT.step?0.4+0.4*Math.sin(Date.now()/300):0;
+      ctx.fillStyle=i===TUT.step?P.score:'#3a1800';
+      ctx.beginPath(); ctx.arc(660+i*14, 96, i===TUT.step?5:3, 0, Math.PI*2); ctx.fill();
+    }
+  }
+
+  // HUD
+  pixRect(0,0,900,28,'#0d0600');
+  pixText('TUTORIAL',10,20,P.caramel,9); pixText('$'+G.money,200,20,P.score,9);
+  pixText('NO TIMER',450,20,P.tip,8,'center'); pixText('ORDERS: '+G.ordersComplete,680,20,P.cream,8);
+  drawMuteBtn();
+
+  G.particles.forEach(p=>{ctx.globalAlpha=p.life;ctx.fillStyle=p.col;ctx.fillRect(p.x-p.size/2,p.y-p.size/2,p.size,p.size);});
+  ctx.globalAlpha=1;
+  G.floatTexts.forEach(f=>{ctx.globalAlpha=f.life;pixText(f.txt,f.x,f.y,f.col,9,'center');});
+  ctx.globalAlpha=1;
+}
+
+// ── START / NEXT ─────────────────────────────────────────────
+function startGame(){
+  G.state='game';
+  G.queue=[];
+  G.currentOrder=null;
+  G.money=0;
+  G.ordersComplete=0;
+  G.combo=0;
+  G.timer=G.maxTimer;
+  activeDrink=null;
+  buildSteps=[];
+  spawnTimer=0;
+  G.particles=[];
+  G.floatTexts=[];
+  G.station={};
+}
+
+function nextDay(){
+  G.day++;
+  G.state='game';
+  G.queue=[];
+  G.currentOrder=null;
+  G.ordersComplete=0;
+  G.combo=0;
+  G.timer=G.maxTimer+G.day*5;
+  G.maxTimer=G.timer;
+  activeDrink=null;
+  buildSteps=[];
+  spawnTimer=0;
+  G.particles=[];
+  G.floatTexts=[];
+  G.station={};
+}
+
+// ── MOUSE / TOUCH ────────────────────────────────────────────
+let mouseX=0, mouseY=0;
+
+function getCanvasPos(e){
+  const r=c.getBoundingClientRect();
+  const touch=e.touches?e.touches[0]:e;
+  return {
+    x:Math.round((touch.clientX-r.left)*(900/r.width)),
+    y:Math.round((touch.clientY-r.top)*(600/r.height))
+  };
+}
+
+c.addEventListener('mousemove',e=>{
+  const p=getCanvasPos(e);
+  mouseX=p.x; mouseY=p.y;
+  if(drag.active){
+    drag.x=p.x+drag.offsetX;
+    drag.y=p.y+drag.offsetY;
+    c.style.cursor='grabbing';
+  } else {
+    c.style.cursor='default';
+  }
+});
+
+c.addEventListener('mousedown',e=>{
+  const p=getCanvasPos(e);
+  startMusic();
+  if(G.state==='game'||G.state==='tutorial') tryPickUpIngredient(p.x, p.y);
+});
+
+c.addEventListener('mouseup',e=>{
+  if((G.state==='game'||G.state==='tutorial') && drag.active){
+    drag.active=false;
+    tryDropIngredient(drag.x, drag.y);
+  }
+});
+
+c.addEventListener('touchstart',e=>{
+  e.preventDefault();
+  const p=getCanvasPos(e);
+  startMusic();
+  if(G.state==='game'||G.state==='tutorial') tryPickUpIngredient(p.x, p.y);
+  else handleClick(p.x, p.y);
+},{passive:false});
+
+c.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  if(!drag.active) return;
+  const p=getCanvasPos(e);
+  mouseX=p.x; mouseY=p.y;
+  drag.x=p.x+drag.offsetX;
+  drag.y=p.y+drag.offsetY;
+},{passive:false});
+
+c.addEventListener('touchend',e=>{
+  e.preventDefault();
+  if((G.state==='game'||G.state==='tutorial') && drag.active){
+    drag.active=false;
+    tryDropIngredient(drag.x, drag.y);
+  }
+},{passive:false});
+
+c.addEventListener('click',e=>{
+  const p=getCanvasPos(e);
+  handleClick(p.x, p.y);
+});
+
+function tryPickUpIngredient(mx, my){
+  if(!activeDrink || drag.flying) return;
+  for(const s of STATIONS){
+    if(mx>=s.x && mx<=s.x+s.w && my>=s.y && my<=s.y+s.h){
+      // In tutorial, only allow the highlighted station
+      if(G.state==='tutorial'){
+        const ts=getTutStep();
+        if(!ts||ts.action!=='do_step'||ts.highlight!==s.id){
+          const expected=STATIONS.find(st=>st.id===ts?.highlight);
+          if(expected) addFloat('GRAB THE '+expected.label+'!', expected.x+expected.w/2, expected.y-14, P.score);
+          return;
+        }
+      }
+      if(buildSteps.includes(s.action)){
+        addFloat('ALREADY DONE!', s.x+s.w/2, s.y-10, '#999');
+        playErrorSound();
+        return;
+      }
+      drag.active=true;
+      drag.station=s;
+      drag.x=mx; drag.y=my;
+      drag.offsetX=0; drag.offsetY=0;
+      c.style.cursor='grabbing';
+      return;
+    }
+  }
+}
+
+function tryDropIngredient(mx, my){
+  c.style.cursor='default';
+  if(!drag.station || !activeDrink) return;
+  const s=drag.station;
+  drag.station=null;
+
+  const d=DRINKS[activeDrink];
+  const nextNeeded=d.steps.find(step=>!buildSteps.includes(step));
+
+  // Check drop on cup area
+  const onCup = mx>=CUP_CX-CUP_W/2-20 && mx<=CUP_CX+CUP_W/2+40
+             && my>=CUP_CY-CUP_H-20   && my<=CUP_CY+20;
+
+  if(onCup){
+    if(s.needs && !buildSteps.includes(s.needs)){
+      addFloat('GRIND FIRST!', CUP_CX, CUP_CY-CUP_H-40, P.bad);
+      playErrorSound();
+      return;
+    }
+    if(nextNeeded===s.action){
+      // Launch flying arc animation
+      drag.flying=true;
+      drag.flyTimer=0;
+      drag.flyFromX=mx;
+      drag.flyFromY=my;
+      drag.station=s; // keep for applyIngredient
+    } else if(buildSteps.includes(s.action)){
+      addFloat('ALREADY ADDED!', CUP_CX, CUP_CY-CUP_H-40, '#999');
+      playErrorSound();
+    } else {
+      addFloat('NOT YET!', CUP_CX, CUP_CY-CUP_H-40, P.bad);
+      playErrorSound();
+    }
+  }
+  // if dropped off-cup, ingredient just disappears (player tries again)
+}
+
+// ── MAIN LOOP ────────────────────────────────────────────────
+let last=0;
+function loop(ts){
+  const dt=(ts-last)/1000;
+  last=ts;
+
+  ctx.clearRect(0,0,900,600);
+
+  if(G.state==='title'){ drawTitle(); requestAnimationFrame(loop); return; }
+  if(G.state==='score'){ drawScoreScreen(); requestAnimationFrame(loop); return; }
+  if(G.state==='shop'){ drawShop(); requestAnimationFrame(loop); return; }
+
+  // TUTORIAL STATE
+  if(G.state==='tutorial'){
+    G.particles.forEach(p=>{p.x+=p.dx;p.y+=p.dy;p.dy+=0.1;p.life-=0.03;});
+    G.particles=G.particles.filter(p=>p.life>0);
+    G.floatTexts.forEach(f=>{f.y+=f.vy;f.life-=0.025;});
+    G.floatTexts=G.floatTexts.filter(f=>f.life>0);
+    Object.keys(G.station).forEach(k=>{ if(!k.startsWith('fill_')&&G.station[k]>0) G.station[k]--; });
+    // Process flying animation in tutorial too
+    if(drag.flying){
+      drag.flyTimer++;
+      if(drag.flyTimer>=drag.flyMax){
+        drag.flying=false;
+        const s=drag.station; drag.station=null;
+        if(s) applyIngredient(s);
+      }
+    }
+    drawTutorial();
+    requestAnimationFrame(loop);
+    return;
+  }
+
+  // UPDATE
+  G.timer-=dt;
+  if(G.timer<=0){ G.state='score'; requestAnimationFrame(loop); return; }
+
+  maybeSpawnCustomer();
+
+  // Update customer patience
+  G.queue.forEach((cust,i)=>{
+    cust.patience-=cust.patienceRate;
+    // slide in
+    const tx=100+i*210;
+    if(cust.x>tx) cust.x=Math.max(cust.x-8,tx);
+    if(cust.patience<=0){
+      // lost customer
+      G.combo=0;
+      addFloat('WALKED OUT!',(cust.x||tx),cust.y-20,P.bad);
+      G.queue.splice(i,1);
+      if(G.currentOrder!==null){
+        if(G.currentOrder>=G.queue.length) G.currentOrder=G.queue.length>0?0:null;
+        if(G.currentOrder!==null) activeDrink=G.queue[G.currentOrder].drink;
+        else { activeDrink=null; buildSteps=[]; }
+      }
+    }
+  });
+
+  // Update station timers
+  Object.keys(G.station).forEach(k=>{ if(!k.startsWith('fill_')&&G.station[k]>0) G.station[k]--; });
+
+  // Update flying ingredient animation
+  if(drag.flying){
+    drag.flyTimer++;
+    if(drag.flyTimer>=drag.flyMax){
+      drag.flying=false;
+      const s=drag.station; drag.station=null;
+      if(s) applyIngredient(s);
+    }
+  }
+
+  // Update particles
+  G.particles.forEach(p=>{p.x+=p.dx;p.y+=p.dy;p.dy+=0.1;p.life-=0.03;});
+  G.particles=G.particles.filter(p=>p.life>0);
+
+  // Update float texts
+  G.floatTexts.forEach(f=>{f.y+=f.vy;f.life-=0.025;});
+  G.floatTexts=G.floatTexts.filter(f=>f.life>0);
+
+  // DRAW
+  drawBG();
+
+  // Determine next needed action for highlighting
+  const nextAction = activeDrink ? DRINKS[activeDrink].steps.find(s=>!buildSteps.includes(s)) : null;
+
+  // Stations on left and right sides
+  STATIONS.forEach(s=>{
+    const hover = !drag.active && mouseX>=s.x && mouseX<=s.x+s.w && mouseY>=s.y && mouseY<=s.y+s.h;
+    const isDone = activeDrink && buildSteps.includes(s.action) && DRINKS[activeDrink].steps.includes(s.action);
+    const isNext = s.action===nextAction && activeDrink;
+    drawStation(s, hover, isNext, isDone);
+    if(hover && !drag.active) c.style.cursor='grab';
+  });
+
+  // Customers
+  G.queue.forEach((cust,i)=>{ drawCustomer(cust,cust.x,i); });
+
+  drawQueue();
+  drawCenteredCup();
+  drawIngredientDrag();
+  drawHUD();
+
+  // Particles (drawn on top)
+  G.particles.forEach(p=>{
+    ctx.globalAlpha=p.life;
+    ctx.fillStyle=p.col;
+    ctx.fillRect(p.x-p.size/2,p.y-p.size/2,p.size,p.size);
+  });
+  ctx.globalAlpha=1;
+
+  // Float texts
+  G.floatTexts.forEach(f=>{
+    ctx.globalAlpha=f.life;
+    pixText(f.txt,f.x,f.y,f.col,9,'center');
+  });
+  ctx.globalAlpha=1;
+
+  // Instructions
+  if(G.currentOrder===null && G.queue.length>0){
+    if(Math.floor(Date.now()/800)%2===0)
+      pixText('▲ CLICK A CUSTOMER TO TAKE THEIR ORDER ▲',450,420,P.score,8,'center');
+  }
+  if(G.currentOrder!==null && activeDrink && !drag.flying){
+    const d=DRINKS[activeDrink];
+    const next=d.steps.find(s=>!buildSteps.includes(s));
+    const stationForNext = next ? STATIONS.find(s=>s.action===next) : null;
+    if(stationForNext){
+      const side = stationForNext.x < 400 ? '◀ LEFT' : 'RIGHT ▶';
+      pixText(`DRAG ${stationForNext.icon} ${stationForNext.label} TO CUP`, 450, 290, P.caramel, 8, 'center');
+    } else if(!next){
+      pixText('▼ CLICK SERVE! ▼', 450, 290, P.tip, 9, 'center');
+    }
+  }
+
+  requestAnimationFrame(loop);
+}
+
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
